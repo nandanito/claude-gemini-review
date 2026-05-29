@@ -22,6 +22,25 @@ Gemini's findings are returned **verbatim** — severity-tagged
 (CRITICAL/HIGH/MEDIUM/LOW), with file:line, the problem, and a recommended fix,
 ending in a one-line verdict.
 
+### Modes & flags
+
+```
+/gemini-review adversarial      # hostile pass — assume it's broken, try to make it fail
+/gemini-review adversarial 42   # …on a specific PR
+/gemini-review 42 --comment     # post the findings to PR #42 as a comment (needs gh)
+/gemini-review doctor           # check the Gemini CLI, auth, trust, and gh are working
+```
+
+- **`adversarial`** swaps in a skeptical prompt that hunts for races, bad
+  inputs, error paths, overflow, and security holes — and demands a concrete
+  failing scenario for each. Same speed as a normal review (one pass).
+- **`--comment`** posts the review verbatim to the pull request (the only write
+  the command makes — it still never edits code). Resolves the PR from the
+  argument or the current branch.
+- **`doctor`** runs a tiny live call to confirm auth, the trusted-folder gate,
+  and read-only plan mode actually work end to end — the failure modes static
+  checks miss.
+
 ## How it works
 
 The command drives Gemini headlessly and read-only:
