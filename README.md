@@ -5,6 +5,11 @@ A [Claude Code](https://claude.com/claude-code) slash command that runs the
 change — handy as a final pass before merging a PR, and a nice complement to
 `/codex:review` (a different model looking at the same diff).
 
+![/gemini-review running a read-only Gemini review of a PR diff](demo/gemini-review.gif)
+
+<sub>Demo output is representative — see [`demo/`](demo/). A real review is
+read-only and takes ~80s+.</sub>
+
 ```
 /gemini-review            # review this branch's PR diff vs its base
 /gemini-review 42         # review GitHub PR #42
