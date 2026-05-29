@@ -14,8 +14,8 @@ Output demo/gemini-review.gif
 
 Set Shell bash
 Set FontSize 20
-Set Width 1100
-Set Height 600
+Set Width 1180
+Set Height 740
 Set Padding 24
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
@@ -26,7 +26,7 @@ Type `export PATH=/tmp/grbin:$PATH; PS1='claude > /'; clear` Enter
 Show
 
 Sleep 700ms
-Type "gemini-review 42"
+Type "gemini-review adversarial 42"
 Sleep 900ms
 Enter
 Sleep 9s
