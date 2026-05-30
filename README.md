@@ -47,8 +47,8 @@ ending in a one-line verdict.
 The command drives Gemini headlessly and read-only:
 
 ```bash
-git diff <base>...HEAD > "$DIFF_FILE"
-gemini --skip-trust --approval-mode plan -o text -p "$REVIEW_PROMPT" < "$DIFF_FILE"
+git diff --text <base>...HEAD | tr -d '\000' > "$DIFF_FILE"
+gemini --skip-trust -e none --approval-mode plan -o text -p "$REVIEW_PROMPT" < "$DIFF_FILE"
 ```
 
 - **`--approval-mode plan`** keeps Gemini **read-only** — it may read files in
@@ -58,6 +58,11 @@ gemini --skip-trust --approval-mode plan -o text -p "$REVIEW_PROMPT" < "$DIFF_FI
   session. Without it, Gemini refuses to run non-interactively in an untrusted
   directory *and* silently downgrades plan mode — so the flag is required, and
   plan mode still keeps the run read-only.
+- **`-e none`** loads no extensions. A configured MCP extension can block
+  Gemini's headless startup indefinitely (the run hangs with no output); a
+  review never needs extensions, so this is off by default.
+- **`git diff --text | tr -d '\000'`** forces a textual diff and strips NUL
+  bytes, so a file git would otherwise call "binary" still gets reviewed.
 - The diff goes in on **stdin**; the review instructions go in via **`-p`**.
 
 The command itself never edits your code. It surfaces findings; you decide what
@@ -103,11 +108,31 @@ Then invoke `/gemini-review` from inside any git repository.
 
 ## A note on speed
 
-Gemini's headless review is **not instant** — budget roughly a second per line
-of diff (a ~100-line diff takes ~80s; several hundred lines can run a few
-minutes). The command runs Gemini in the background and waits. For very large
-changes, review the highest-risk paths first or split the review rather than
-truncating the diff.
+Gemini's headless review is **not instant** — it's a full agentic loop, not a
+single call. Budget roughly a second per line of diff (a ~100-line diff takes
+~80s; several hundred lines can run a few minutes). The command runs Gemini in
+the background and waits. Note that `-o text` buffers the whole response to the
+end, so an in-flight run shows **no output until it finishes** — zero output
+mid-run is not a hang.
+
+To go faster:
+- **Use a faster model for large diffs:** add `-m gemini-2.5-flash` to the
+  invocation. Reserve the default pro model for small, high-stakes changes.
+- **Narrow the review:** `/gemini-review <ref> -- <path>` to focus on source and
+  skip docs, lockfiles, and generated code.
+- **Split very large changes** and review the highest-risk paths first rather
+  than truncating the diff.
+
+## Troubleshooting
+
+- **Hangs for minutes with no output** → almost always an MCP **extension**
+  stalling headless startup. The command passes `-e none` to avoid this; if you
+  customized it, keep that flag. `gemini -l` lists your extensions.
+- **A file is missing from the review** → it likely contains a NUL/binary byte,
+  so git dropped it as "binary." The command uses `git diff --text` and strips
+  NUL bytes so it's reviewed anyway.
+- **Auth / trust errors** → run `/gemini-review doctor`, which makes one tiny
+  live call to check auth, the trusted-folder gate, and plan mode end to end.
 
 ## License
 
