@@ -85,10 +85,25 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
 ## Step 3 — Gather the diff
 
 - Produce the unified diff for the chosen target and a `--stat` summary.
-- If the diff is **empty**, report "nothing to review" and stop (do not invoke
-  Gemini).
-- Write the diff to a temp file (e.g. `mktemp`) so large diffs and special
-  characters survive cleanly rather than going through shell quoting.
+- **Write the diff to a temp file, then HARD-CHECK it is non-empty before doing
+  anything else. If the file has zero bytes, ABORT immediately** — report
+  "nothing to review" and do **not** invoke Gemini. This is a guard rail, not a
+  suggestion: a path filter that matches no changes, a wrong base, or a bad
+  glob produces an empty diff, and launching Gemini on empty input wastes a
+  long slow run (or yields a bogus "looks good"). Treat empty input as a stop
+  condition, never as "proceed".
+
+  ```bash
+  DIFF_FILE="$(mktemp)"
+  git diff --text "$BASE"...HEAD $PATHSPEC | tr -d '\000' > "$DIFF_FILE"
+  if [ ! -s "$DIFF_FILE" ]; then
+    echo "nothing to review (empty diff for this target/pathspec)"; exit 0
+  fi
+  ```
+- Write the diff to a temp file (via `mktemp`) so large diffs and special
+  characters survive cleanly rather than going through shell quoting. **Pass the
+  temp file by its exact path** — do not re-glob for it (`/tmp/foo.*` may not
+  match the name `mktemp` actually produced, silently feeding Gemini nothing).
 - **Force a text diff and strip NUL bytes.** Use `git diff --text` so a file
   git considers "binary" (e.g. one with a stray NUL byte) still appears in the
   diff instead of collapsing to `Binary files differ` — otherwise that file is
@@ -124,6 +139,30 @@ Why these flags:
   0-byte output file mid-run for a hang; check the process is alive instead.
   (Use `-o json` and read `.response` if you need to script around it.)
 - The diff arrives on stdin; `-p` is appended after it.
+
+**Always bound the run with a timeout.** Gemini headless can stall outright on
+very large diffs (no output, no error, indefinitely) — `-e none` fixes the
+*extension* hang but not this one. An unbounded run will silently burn 30+
+minutes of the user's time. Wrap every invocation in a watchdog that kills it
+and reports, instead of waiting forever. macOS has no `timeout(1)` by default,
+so background the run and a killer together:
+
+```bash
+TIMEOUT="${GEMINI_REVIEW_TIMEOUT:-420}"   # ~7 min; raise for a known-huge diff
+gemini --skip-trust -e none --approval-mode plan -o text \
+  -p "$REVIEW_PROMPT" < "$DIFF_FILE" > "$OUT" 2>"$ERR" &
+GPID=$!
+( sleep "$TIMEOUT"; kill -9 "$GPID" 2>/dev/null \
+    && echo "WATCHDOG: killed after ${TIMEOUT}s" >> "$ERR" ) &
+WPID=$!
+wait "$GPID"; RC=$?; kill "$WPID" 2>/dev/null
+```
+
+If the watchdog fires, tell the user the run timed out and **re-run narrower**
+(source-only paths) or with a faster model (`-m gemini-2.5-flash`) — do not just
+relaunch the same too-large diff. Pick `TIMEOUT` from the diff size: a few
+minutes for a small change, more only when you have deliberately accepted a
+large diff.
 
 Gemini headless is **slow** — budget on the order of a second per diff line
 (a ~100-line diff takes ~80s; several hundred lines can exceed a few minutes).

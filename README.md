@@ -128,6 +128,14 @@ To go faster:
 - **Hangs for minutes with no output** → almost always an MCP **extension**
   stalling headless startup. The command passes `-e none` to avoid this; if you
   customized it, keep that flag. `gemini -l` lists your extensions.
+- **Runs forever even with `-e none`** → Gemini can stall on a very large diff.
+  The command wraps every run in a **timeout watchdog** (default ~7 min, override
+  with `GEMINI_REVIEW_TIMEOUT`) so it self-terminates instead of burning your
+  time; on a timeout it re-runs narrower or on a faster model rather than
+  retrying the same huge diff.
+- **"nothing to review" / a path filter matched no changes** → the command
+  hard-checks the diff is non-empty before invoking Gemini and aborts if not,
+  so it never spends a slow run on empty input.
 - **A file is missing from the review** → it likely contains a NUL/binary byte,
   so git dropped it as "binary." The command uses `git diff --text` and strips
   NUL bytes so it's reviewed anyway.
