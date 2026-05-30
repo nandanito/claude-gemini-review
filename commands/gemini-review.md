@@ -42,14 +42,18 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
    preflight can't do) — one tiny live call:
    ```bash
    printf 'Reply with exactly the token READY and nothing else.\n' \
-     | gemini --skip-trust --approval-mode plan -o text -p 'Follow the stdin instruction.'
+     | gemini --skip-trust -e none --approval-mode plan -o text -p 'Follow the stdin instruction.'
    ```
    - exit 0 and output contains `READY` → ✓ authenticated, trust gate cleared,
-     plan mode held.
+     plan mode held, extensions cleanly skipped.
    - auth error → run `gemini` once interactively to sign in, or set
      `GEMINI_API_KEY`.
    - a "not trusted" / "approval mode overridden" warning → confirm the call
      includes `--skip-trust` (this command always passes it).
+   - **hangs with no output for minutes** → almost always a configured MCP
+     extension stalling headless startup. This call passes `-e none` to skip
+     them; if you removed that flag, put it back. To confirm the culprit,
+     `gemini -l` (list extensions) and re-run with `-e none`.
 4. **`gh` for PR features** (optional — only needed for PR-number targets and
    `--comment`): `command -v gh` and `gh auth status`. Report as optional.
 
@@ -85,6 +89,13 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
   Gemini).
 - Write the diff to a temp file (e.g. `mktemp`) so large diffs and special
   characters survive cleanly rather than going through shell quoting.
+- **Force a text diff and strip NUL bytes.** Use `git diff --text` so a file
+  git considers "binary" (e.g. one with a stray NUL byte) still appears in the
+  diff instead of collapsing to `Binary files differ` — otherwise that file is
+  silently excluded from the review. Then pipe through `tr -d '\000'` (or
+  `LC_ALL=C tr '\000' ' '`) before writing the temp file, so a NUL in the
+  content can't make downstream tooling treat the diff itself as binary or
+  confuse Gemini's stdin. If you had to strip bytes, mention it in the report.
 
 ## Step 4 — Run Gemini (read-only)
 
@@ -92,26 +103,48 @@ Invoke Gemini in headless, **read-only plan mode**, feeding the diff on stdin
 and the chosen review prompt via `-p`:
 
 ```bash
-gemini --skip-trust --approval-mode plan -o text \
+gemini --skip-trust -e none --approval-mode plan -o text \
   -p "$REVIEW_PROMPT" < "$DIFF_FILE"
 ```
 
 Why these flags:
 - `--skip-trust` — clears the headless trusted-folder gate for this one session
   (Gemini refuses non-interactive runs in untrusted dirs otherwise).
+- `-e none` — load **no** extensions for this run. This is the single biggest
+  reliability fix: a configured MCP extension (image servers, etc.) can block
+  headless startup indefinitely, so the run produces no output and looks hung
+  for hours. A review never needs extensions. If a user genuinely wants one,
+  they can pass it through, but the default is off.
 - `--approval-mode plan` — **read-only**. Gemini may read repo files for context
   but cannot edit, write, or run mutating tools. This is the safety boundary;
   keep it.
-- `-o text` — clean response text to relay. (Use `-o json` and read `.response`
-  if you need to script around it.)
+- `-o text` — clean response text to relay. NOTE: `-o text` **buffers the whole
+  response to the end**, so an in-progress run shows zero output until it
+  finishes — "slow" and "hung" look identical from outside. Don't mistake a
+  0-byte output file mid-run for a hang; check the process is alive instead.
+  (Use `-o json` and read `.response` if you need to script around it.)
 - The diff arrives on stdin; `-p` is appended after it.
 
 Gemini headless is **slow** — budget on the order of a second per diff line
 (a ~100-line diff takes ~80s; several hundred lines can exceed a few minutes).
-Run the command in the background and wait rather than capping it short. For
-very large changes, review the highest-risk paths first
-(`/gemini-review <ref> -- <path>`) or split the review, and tell the user you
-did so — don't silently truncate the diff.
+Run the command in the background and wait rather than capping it short.
+
+**Levers to speed it up, fastest first:**
+- **`-e none`** (already in the command). Skipping extension startup is the
+  biggest single win and removes the most common hang.
+- **Pick a faster model for big diffs:** add `-m gemini-2.5-flash` (or the
+  current fast model) instead of the default pro model. Flash reviews a large
+  diff several times faster; reserve pro for small, high-stakes changes. Say
+  which model you used in the report.
+- **Narrow the diff.** Most of a diff is often docs, lockfiles, generated code,
+  and tests. Restrict to source paths
+  (`git diff --text <base>...HEAD -- <src paths>`) for a faster, denser review;
+  note in the report what you scoped out so "reviewed" doesn't overclaim.
+- **Split very large changes** and review the highest-risk paths first
+  (`/gemini-review <ref> -- <path>`), then the rest — don't silently truncate.
+- **Don't poll on a sub-300s loop.** One background run + a single wait is
+  cheaper than many short polls; with `-o text` there's nothing to see until it
+  finishes anyway.
 
 Pick the prompt by mode:
 
