@@ -50,10 +50,13 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
      `GEMINI_API_KEY`.
    - a "not trusted" / "approval mode overridden" warning → confirm the call
      includes `--skip-trust` (this command always passes it).
-   - **hangs with no output for minutes** → almost always a configured MCP
-     extension stalling headless startup. This call passes `-e none` to skip
-     them; if you removed that flag, put it back. To confirm the culprit,
-     `gemini -l` (list extensions) and re-run with `-e none`.
+   - **hangs with no output for minutes** → for *this tiny doctor call*, almost
+     always a configured MCP extension stalling headless startup. This call
+     passes `-e none` to skip them; if you removed that flag, put it back. To
+     confirm the culprit, `gemini -l` (list extensions) and re-run with `-e none`.
+     If the doctor call passes (`READY`) but a real *review* hangs, it is the
+     other cause: the plan-mode file-read loop on a large/multi-file diff — narrow
+     to one file per run (see "If the watchdog fires"), not an extension issue.
 4. **`gh` for PR features** (optional — only needed for PR-number targets and
    `--comment`): `command -v gh` and `gh auth status`. Report as optional.
 
@@ -132,7 +135,13 @@ Why these flags:
   they can pass it through, but the default is off.
 - `--approval-mode plan` — **read-only**. Gemini may read repo files for context
   but cannot edit, write, or run mutating tools. This is the safety boundary;
-  keep it.
+  keep it. **Caveat:** that permitted reading is itself the most common
+  *non-extension* stall. On a multi-file diff Gemini tries to *open the source
+  files the diff references* for context, and on a large or many-file diff that
+  read loop hangs headless startup indefinitely (zero output, no error) — the
+  same symptom as the extension hang, different cause. The fix is to bound how
+  many files a run spans and to tell Gemini not to chase referenced files (see
+  "If the watchdog fires" and the prompt clause below).
 - `-o text` — clean response text to relay. NOTE: `-o text` **buffers the whole
   response to the end**, so an in-progress run shows zero output until it
   finishes — "slow" and "hung" look identical from outside. Don't mistake a
@@ -158,11 +167,25 @@ WPID=$!
 wait "$GPID"; RC=$?; kill "$WPID" 2>/dev/null
 ```
 
-If the watchdog fires, tell the user the run timed out and **re-run narrower**
-(source-only paths) or with a faster model (`-m gemini-2.5-flash`) — do not just
-relaunch the same too-large diff. Pick `TIMEOUT` from the diff size: a few
-minutes for a small change, more only when you have deliberately accepted a
-large diff.
+If the watchdog fires, tell the user the run timed out and **re-run narrower** —
+do not just relaunch the same too-large diff. In order of effectiveness:
+
+1. **Review fewer files per run — ideally one.** This is the strongest lever for
+   the read-loop stall above, and it beats raising the timeout: empirically a
+   single-file diff (a few hundred lines) completes, while the *same* lines spread
+   across several files hang even with an 18-minute watchdog. Run
+   `/gemini-review <ref> -- <one-file>` per high-risk file and combine the
+   findings yourself; say in the report which files you covered and which you did
+   not, so "reviewed" never overclaims.
+2. **Tell Gemini not to open referenced files** — add the "judge from the diff
+   alone; do not open other repo files" clause (already in the prompt templates
+   below). This removes the read loop that causes the stall.
+3. **Faster model** (`-m gemini-2.5-flash`) and **source-only paths**. Note these
+   alone are often *not* enough: a multi-file source diff still stalls under flash
+   — combine with (1).
+
+Pick `TIMEOUT` from the diff size, but treat a stall as a signal to *narrow*, not
+to keep raising the timeout — a run that hangs at 7 min usually still hangs at 18.
 
 Gemini headless is **slow** — budget on the order of a second per diff line
 (a ~100-line diff takes ~80s; several hundred lines can exceed a few minutes).
@@ -181,6 +204,12 @@ Run the command in the background and wait rather than capping it short.
   note in the report what you scoped out so "reviewed" doesn't overclaim.
 - **Split very large changes** and review the highest-risk paths first
   (`/gemini-review <ref> -- <path>`), then the rest — don't silently truncate.
+- **One (or few) files per run, and forbid opening referenced files.** The
+  headless read loop in plan mode (see the `--approval-mode plan` caveat) scales
+  with how many files the diff spans, not just line count. A per-file run plus the
+  "judge from the diff alone; do not open other repo files" prompt clause is the
+  difference between a clean pass and an indefinite hang. Reach for this *first*
+  when a run stalls.
 - **Don't poll on a sub-300s loop.** One background run + a single wait is
   cheaper than many short polls; with `-o text` there's nothing to see until it
   finishes anyway.
@@ -196,7 +225,10 @@ stdin. Review ONLY that change.
 First, if present, read the repo's conventions from AGENTS.md, GEMINI.md,
 CLAUDE.md, and README before judging — match the project's existing patterns,
 runtime, and norms. You are in read-only mode; reading is allowed, editing is
-not.
+not. Beyond those few convention files, judge the change from the diff on stdin
+ALONE — do NOT open or read the other repo files the diff references; treat the
+diff as the source of truth. (Opening many referenced files is what hangs a
+headless run on a large or multi-file diff.)
 
 Focus on real defects, in priority order:
 - correctness bugs and logic errors
@@ -229,7 +261,11 @@ stdin. Assume the change is guilty until proven innocent — your goal is to MAK
 IT FAIL, not to praise it.
 
 If present, read AGENTS.md, GEMINI.md, CLAUDE.md, and README for the project's
-contracts (read-only; do not edit). Then attack the diff along every axis:
+contracts (read-only; do not edit). Beyond those few convention files, judge the
+change from the diff on stdin ALONE — do NOT open or read the other repo files
+the diff references; treat the diff as the source of truth. (Opening many
+referenced files is what hangs a headless run on a large or multi-file diff.)
+Then attack the diff along every axis:
 - adversarial / malformed / empty / boundary / enormous inputs
 - concurrency: races, deadlocks, TOCTOU, shared-state corruption, ordering
 - error & failure paths: partial failure, missing rollback, swallowed errors,
