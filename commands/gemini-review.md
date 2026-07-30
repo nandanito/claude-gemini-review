@@ -1,10 +1,11 @@
 ---
-description: Review the current branch's PR diff with the Gemini CLI (read-only second opinion). Modes — adversarial, doctor; flag — --comment posts findings to the PR.
+description: Review the current branch's PR diff with the Antigravity CLI (agy) — read-only second opinion. Modes — adversarial, doctor; flag — --comment posts findings to the PR.
 ---
 
-You are running a **second-opinion code review** using the Gemini CLI. This
-gives an independent model a look at the change before merge — complementary
-to `/codex:review`. Argument: `$ARGUMENTS`.
+You are running a **second-opinion code review** using the **Antigravity CLI
+(`agy`)** — Google's successor to the Gemini CLI, which was retired in June
+2026. This gives an independent model a look at the change before merge —
+complementary to `/codex:review`. Argument: `$ARGUMENTS`.
 
 ## Modes — parse `$ARGUMENTS` first
 
@@ -25,9 +26,30 @@ Tokenize `$ARGUMENTS` and route before doing anything else:
 - This command is **review-only**. Do not fix issues, apply patches, or edit
   files. The single write action permitted is posting a PR comment, and only
   when `--comment` was explicitly requested.
-- Return Gemini's findings **verbatim** under a short header. Do not paraphrase,
-  re-grade, or silently drop findings. You may add a one-line note at the end
-  if a finding is clearly wrong, but never edit Gemini's text.
+- **Never pass `--dangerously-skip-permissions`.** That flag is the entire
+  safety boundary — see *The safety model* below. `--mode plan` is **not** a
+  read-only guarantee in `agy`; do not rely on it as one.
+- Return the review's findings **verbatim** under a short header. Do not
+  paraphrase, re-grade, or silently drop findings. You may add a one-line note
+  at the end if a finding is clearly wrong, but never edit the model's text.
+
+## The safety model — read this before changing any flag
+
+`agy` differs from the old Gemini CLI in a way that matters:
+
+- In headless (`--print`) mode, any tool needing permission — `read_file`,
+  `write_file`, shell — is **auto-denied**, because there is no way to prompt.
+  That denial is what makes this command safe to run unattended.
+- `--dangerously-skip-permissions` removes that denial. With it, `agy` **will
+  create and overwrite files even under `--mode plan`** (verified: plan mode
+  wrote a new file and clobbered an existing one). Plan mode is a behavioral
+  hint, not a sandbox.
+- Consequence: this command **passes the whole diff inline in the prompt** and
+  the model reads nothing from disk. That is simultaneously the safety story
+  (no tool ever needs approval), the reliability story (no file-read loop to
+  hang on), and the speed story.
+- `--mode plan` is still passed as cheap defense-in-depth, but the guarantee
+  comes from *omitting* `--dangerously-skip-permissions`.
 
 ## Doctor — `/gemini-review doctor`
 
@@ -35,37 +57,33 @@ A read-only health check. The point is to catch the confusing failure modes
 *before* a real review. Run these and print a ✓/✗ checklist, with a one-line
 remediation for each ✗; end with an overall **READY** / **NOT READY**.
 
-1. **Installed?** `command -v gemini` and `gemini --version`. If missing:
-   `npm i -g @google/gemini-cli`.
+1. **Installed?** `command -v agy` and `agy --version`. If missing:
+   ```bash
+   curl -fsSL https://antigravity.google/install.sh | bash   # macOS / Linux
+   ```
+   (Windows: `winget install Google.AntigravityCLI`.) `agy update` upgrades in
+   place. If the user is migrating from the old Gemini CLI, `agy plugin import
+   gemini` carries over their previous config.
 2. **In a git repo?** `git rev-parse --is-inside-work-tree`.
-3. **Auth + trust + plan-mode actually work** (the end-to-end check static
+3. **Auth and headless print mode actually work** (the end-to-end check static
    preflight can't do) — one tiny live call:
    ```bash
-   printf 'Reply with exactly the token READY and nothing else.\n' \
-     | gemini --skip-trust -e none --approval-mode plan -o text -p 'Follow the stdin instruction.'
+   agy -p 'Reply with exactly the token READY and nothing else.' \
+     --mode plan --output-format text --print-timeout 90s
    ```
-   - exit 0 and output contains `READY` → ✓ authenticated, trust gate cleared,
-     plan mode held, extensions cleanly skipped.
-   - auth error → run `gemini` once interactively to sign in, or set
-     `GEMINI_API_KEY`.
-   - a "not trusted" / "approval mode overridden" warning → confirm the call
-     includes `--skip-trust` (this command always passes it).
-   - **hangs with no output for minutes** → for *this tiny doctor call*, almost
-     always a configured MCP extension stalling headless startup. This call
-     passes `-e none` to skip them; if you removed that flag, put it back. To
-     confirm the culprit, `gemini -l` (list extensions) and re-run with `-e none`.
-     If the doctor call passes (`READY`) but a real *review* hangs, it is the
-     other cause: the plan-mode file-read loop on a large/multi-file diff — narrow
-     to one file per run (see "If the watchdog fires"), not an extension issue.
+   - output contains `READY` → ✓ authenticated and headless print mode works.
+   - **empty output** → *not* a hang. Read stderr: an auth failure, or a tool
+     was auto-denied. See *Empty response* in Step 5.
+   - **Do not judge this by the exit code** — `agy` exits `0` even on failure.
 4. **`gh` for PR features** (optional — only needed for PR-number targets and
    `--comment`): `command -v gh` and `gh auth status`. Report as optional.
 
 ## Step 1 — Preflight (review modes)
 
-- Confirm the `gemini` binary is on PATH (`command -v gemini`). If not, stop and
-  tell the user to install it (`npm i -g @google/gemini-cli`) and authenticate
-  (run `gemini` once interactively, or set `GEMINI_API_KEY`). Suggest
-  `/gemini-review doctor` to diagnose. Do not attempt the review without it.
+- Confirm the `agy` binary is on PATH (`command -v agy`). If not, stop and tell
+  the user to install it (command above) and authenticate (run `agy` once
+  interactively). Suggest `/gemini-review doctor` to diagnose. Do not attempt
+  the review without it.
 - You must be inside a git repository. If not, stop and say so.
 
 ## Step 2 — Determine the review target from the remaining args
@@ -77,7 +95,7 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
   `git diff <base>...HEAD` (three-dot: merge-base to HEAD = exactly this
   branch's changes).
 - **A bare integer** (e.g. `42`) → a GitHub PR. Use `gh pr diff 42` for the
-  diff and `gh pr view 42` for the title/body so Gemini has the intent.
+  diff and `gh pr view 42` for the title/body so the reviewer has the intent.
 - **A git ref / branch name** (e.g. `develop`) → diff against it:
   `git diff <ref>...HEAD`.
 - **`wip` or `--working`** → include uncommitted work: `git diff HEAD`
@@ -90,145 +108,144 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
 - Produce the unified diff for the chosen target and a `--stat` summary.
 - **Write the diff to a temp file, then HARD-CHECK it is non-empty before doing
   anything else. If the file has zero bytes, ABORT immediately** — report
-  "nothing to review" and do **not** invoke Gemini. This is a guard rail, not a
-  suggestion: a path filter that matches no changes, a wrong base, or a bad
-  glob produces an empty diff, and launching Gemini on empty input wastes a
-  long slow run (or yields a bogus "looks good"). Treat empty input as a stop
+  "nothing to review" and do **not** invoke `agy`. A path filter that matches
+  no changes, a wrong base, or a bad glob produces an empty diff, and reviewing
+  empty input yields a bogus "looks good". Treat empty input as a stop
   condition, never as "proceed".
 
   ```bash
-  DIFF_FILE="$(mktemp)"
-  git diff --text "$BASE"...HEAD $PATHSPEC | tr -d '\000' > "$DIFF_FILE"
+  DIFF_FILE="$(mktemp)"; PROMPT_FILE="$(mktemp)"
+  OUT="$(mktemp)"; ERR="$(mktemp)"
+  trap 'rm -f "$DIFF_FILE" "$PROMPT_FILE" "$OUT" "$ERR"' EXIT
+
+  # Keep `--` as its own word. Do NOT collapse this into ${PATHSPEC:+-- $PATHSPEC}:
+  # zsh does not word-split unquoted expansions, so git would receive the single
+  # argument "-- path" and reject it with a usage error.
+  if [ -n "$PATHSPEC" ]; then
+    git diff --text "$BASE"...HEAD -- $PATHSPEC | tr -d '\000' > "$DIFF_FILE"
+  else
+    git diff --text "$BASE"...HEAD | tr -d '\000' > "$DIFF_FILE"
+  fi
+
   if [ ! -s "$DIFF_FILE" ]; then
     echo "nothing to review (empty diff for this target/pathspec)"; exit 0
   fi
   ```
-- Write the diff to a temp file (via `mktemp`) so large diffs and special
-  characters survive cleanly rather than going through shell quoting. **Pass the
-  temp file by its exact path** — do not re-glob for it (`/tmp/foo.*` may not
-  match the name `mktemp` actually produced, silently feeding Gemini nothing).
 - **Force a text diff and strip NUL bytes.** Use `git diff --text` so a file
   git considers "binary" (e.g. one with a stray NUL byte) still appears in the
   diff instead of collapsing to `Binary files differ` — otherwise that file is
-  silently excluded from the review. Then pipe through `tr -d '\000'` (or
-  `LC_ALL=C tr '\000' ' '`) before writing the temp file, so a NUL in the
-  content can't make downstream tooling treat the diff itself as binary or
-  confuse Gemini's stdin. If you had to strip bytes, mention it in the report.
+  silently excluded from the review. Then pipe through `tr -d '\000'` before
+  writing the temp file. If you had to strip bytes, mention it in the report.
+- **Pass the temp file by its exact path** — do not re-glob for it
+  (`/tmp/foo.*` may not match the name `mktemp` actually produced).
 
-## Step 4 — Run Gemini (read-only)
+## Step 4 — Build the prompt (diff goes INLINE, not on stdin)
 
-Invoke Gemini in headless, **read-only plan mode**, feeding the diff on stdin
-and the chosen review prompt via `-p`:
+**`agy` ignores stdin.** The old `gemini ... -p "$PROMPT" < "$DIFF_FILE"` form
+silently reviews nothing — the model receives no input and either invents a
+review or returns empty. The diff must be embedded in the prompt string.
 
 ```bash
-gemini --skip-trust -e none --approval-mode plan -o text \
-  -p "$REVIEW_PROMPT" < "$DIFF_FILE"
+{
+  printf '%s\n\n' "$REVIEW_PROMPT"
+  printf -- '--- BEGIN DIFF ---\n'
+  cat "$DIFF_FILE"
+  printf -- '--- END DIFF ---\n'
+} > "$PROMPT_FILE"
+```
+
+**Size guard — the prompt travels through `argv`.** `ARG_MAX` is ~1 MB
+(args + environment combined), so a very large diff fails with "argument list
+too long". Check before invoking and narrow rather than truncate:
+
+```bash
+PROMPT_BYTES=$(wc -c < "$PROMPT_FILE")
+if [ "$PROMPT_BYTES" -gt 262144 ]; then
+  echo "diff too large (${PROMPT_BYTES}B) — narrow with a pathspec or split the review"
+  exit 0
+fi
+```
+
+If it trips, re-run scoped to source paths (`/gemini-review <ref> -- <path>`)
+or review the highest-risk files in separate passes — and say in the report
+which files you covered and which you did not, so "reviewed" never overclaims.
+
+**Note on convention files.** The model **cannot** read `AGENTS.md`,
+`CLAUDE.md`, or `README` — those reads are auto-denied. Do not instruct it to.
+If project conventions matter for this review, *you* read the relevant file and
+inline a short summary into `$REVIEW_PROMPT` yourself.
+
+## Step 5 — Run agy (read-only) and handle the result
+
+```bash
+agy -p "$(cat "$PROMPT_FILE")" \
+  --mode plan \
+  --output-format json \
+  --print-timeout 10m \
+  > "$OUT" 2>"$ERR"
 ```
 
 Why these flags:
-- `--skip-trust` — clears the headless trusted-folder gate for this one session
-  (Gemini refuses non-interactive runs in untrusted dirs otherwise).
-- `-e none` — load **no** extensions for this run. This is the single biggest
-  reliability fix: a configured MCP extension (image servers, etc.) can block
-  headless startup indefinitely, so the run produces no output and looks hung
-  for hours. A review never needs extensions. If a user genuinely wants one,
-  they can pass it through, but the default is off.
-- `--approval-mode plan` — **read-only**. Gemini may read repo files for context
-  but cannot edit, write, or run mutating tools. This is the safety boundary;
-  keep it. **Caveat:** that permitted reading is itself the most common
-  *non-extension* stall. On a multi-file diff Gemini tries to *open the source
-  files the diff references* for context, and on a large or many-file diff that
-  read loop hangs headless startup indefinitely (zero output, no error) — the
-  same symptom as the extension hang, different cause. The fix is to bound how
-  many files a run spans and to tell Gemini not to chase referenced files (see
-  "If the watchdog fires" and the prompt clause below).
-- `-o text` — clean response text to relay. NOTE: `-o text` **buffers the whole
-  response to the end**, so an in-progress run shows zero output until it
-  finishes — "slow" and "hung" look identical from outside. Don't mistake a
-  0-byte output file mid-run for a hang; check the process is alive instead.
-  (Use `-o json` and read `.response` if you need to script around it.)
-- The diff arrives on stdin; `-p` is appended after it.
+- **No `--dangerously-skip-permissions`** — the safety boundary. See *The
+  safety model*. Never add it.
+- `--mode plan` — defense-in-depth behavioral hint. Not a sandbox.
+- `--output-format json` — gives a parseable envelope. `text` is fine for a
+  quick call, but JSON is what makes the success check below reliable.
+- `--print-timeout 10m` — **built-in watchdog**; replaces the hand-rolled
+  `sleep`/`kill` wrapper the old Gemini version needed. Default is `5m`. Raise
+  for a large diff; there is no need to background the run and poll it.
 
-**Always bound the run with a timeout.** Gemini headless can stall outright on
-very large diffs (no output, no error, indefinitely) — `-e none` fixes the
-*extension* hang but not this one. An unbounded run will silently burn 30+
-minutes of the user's time. Wrap every invocation in a watchdog that kills it
-and reports, instead of waiting forever. macOS has no `timeout(1)` by default,
-so background the run and a killer together:
+**Checking success — the exit code is useless.** `agy` returns **`0` even on
+total failure**, and `"status":"SUCCESS"` appears in the JSON *even when the run
+produced nothing*. The only reliable signal is **a non-empty `.response`**:
 
 ```bash
-TIMEOUT="${GEMINI_REVIEW_TIMEOUT:-420}"   # ~7 min; raise for a known-huge diff
-gemini --skip-trust -e none --approval-mode plan -o text \
-  -p "$REVIEW_PROMPT" < "$DIFF_FILE" > "$OUT" 2>"$ERR" &
-GPID=$!
-( sleep "$TIMEOUT"; kill -9 "$GPID" 2>/dev/null \
-    && echo "WATCHDOG: killed after ${TIMEOUT}s" >> "$ERR" ) &
-WPID=$!
-wait "$GPID"; RC=$?; kill "$WPID" 2>/dev/null
+RESPONSE="$(jq -r '.response // ""' "$OUT")"     # or python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("response",""))' "$OUT"
+if [ -z "$RESPONSE" ]; then
+  echo "agy produced no review. Cause:"; cat "$ERR"
+  exit 1     # STOP here — never fall through and print an empty review
+fi
 ```
 
-If the watchdog fires, tell the user the run timed out and **re-run narrower** —
-do not just relaunch the same too-large diff. In order of effectiveness:
+An empty `$RESPONSE` is a **stop condition**. Do not continue to the reporting
+step and emit a review header with nothing under it — that reads as "reviewed,
+found nothing" when in fact nothing was reviewed. Report the failure instead.
 
-1. **Review fewer files per run — ideally one.** This is the strongest lever for
-   the read-loop stall above, and it beats raising the timeout: empirically a
-   single-file diff (a few hundred lines) completes, while the *same* lines spread
-   across several files hang even with an 18-minute watchdog. Run
-   `/gemini-review <ref> -- <one-file>` per high-risk file and combine the
-   findings yourself; say in the report which files you covered and which you did
-   not, so "reviewed" never overclaims.
-2. **Tell Gemini not to open referenced files** — add the "judge from the diff
-   alone; do not open other repo files" clause (already in the prompt templates
-   below). This removes the read loop that causes the stall.
-3. **Faster model** (`-m gemini-2.5-flash`) and **source-only paths**. Note these
-   alone are often *not* enough: a multi-file source diff still stalls under flash
-   — combine with (1).
+- **On success** — print a header (`# Gemini Review — <target>`, or
+  `# Gemini Adversarial Review — <target>` in adversarial mode) then
+  `$RESPONSE` **verbatim**. Mention the model if you overrode it.
+- **Empty response** → read `$ERR`, which carries the real diagnostic:
+  - *"a tool required the `read_file` permission … auto-denied"* → the prompt
+    told the model to open files. Reinforce the "judge from the diff alone"
+    clause; do **not** "fix" this with `--dangerously-skip-permissions`.
+  - **auth failure** → run `agy` once interactively to sign in.
+  - **timeout** → raise `--print-timeout`, or narrow the diff.
+- Do not fix any issue the review raises. Surfacing them is the job; the user
+  decides what to act on.
 
-Pick `TIMEOUT` from the diff size, but treat a stall as a signal to *narrow*, not
-to keep raising the timeout — a run that hangs at 7 min usually still hangs at 18.
-
-Gemini headless is **slow** — budget on the order of a second per diff line
-(a ~100-line diff takes ~80s; several hundred lines can exceed a few minutes).
-Run the command in the background and wait rather than capping it short.
-
-**Levers to speed it up, fastest first:**
-- **`-e none`** (already in the command). Skipping extension startup is the
-  biggest single win and removes the most common hang.
-- **Pick a faster model for big diffs:** add `-m gemini-2.5-flash` (or the
-  current fast model) instead of the default pro model. Flash reviews a large
-  diff several times faster; reserve pro for small, high-stakes changes. Say
-  which model you used in the report.
-- **Narrow the diff.** Most of a diff is often docs, lockfiles, generated code,
-  and tests. Restrict to source paths
-  (`git diff --text <base>...HEAD -- <src paths>`) for a faster, denser review;
-  note in the report what you scoped out so "reviewed" doesn't overclaim.
-- **Split very large changes** and review the highest-risk paths first
-  (`/gemini-review <ref> -- <path>`), then the rest — don't silently truncate.
-- **One (or few) files per run, and forbid opening referenced files.** The
-  headless read loop in plan mode (see the `--approval-mode plan` caveat) scales
-  with how many files the diff spans, not just line count. A per-file run plus the
-  "judge from the diff alone; do not open other repo files" prompt clause is the
-  difference between a clean pass and an indefinite hang. Reach for this *first*
-  when a run stalls.
-- **Don't poll on a sub-300s loop.** One background run + a single wait is
-  cheaper than many short polls; with `-o text` there's nothing to see until it
-  finishes anyway.
+**Speed.** `agy` is dramatically faster than the old Gemini CLI — a ~10 KB /
+~250-line diff reviews in roughly **10–15 seconds**, not the minutes the Gemini
+version took. Just run it and wait; there is no need to background it. Levers if
+a big diff drags:
+- **Faster model:** `--model gemini-3.6-flash-medium` (see `agy models` for the
+  current list; `gemini-3.1-pro-high` is the high-reasoning end). Say which
+  model you used in the report.
+- **Reasoning effort:** `--effort low|medium|high` — `high` for a small,
+  high-stakes change; `low` for a large mechanical one.
+- **Narrow the diff** to source paths, skipping docs, lockfiles, and generated
+  code; note in the report what you scoped out.
 
 Pick the prompt by mode:
 
 ### Standard review prompt
 
 ```
-You are a meticulous senior code reviewer. A unified git diff is provided on
-stdin. Review ONLY that change.
+You are a meticulous senior code reviewer. A unified git diff is provided below
+between the BEGIN DIFF / END DIFF markers. Review ONLY that change.
 
-First, if present, read the repo's conventions from AGENTS.md, GEMINI.md,
-CLAUDE.md, and README before judging — match the project's existing patterns,
-runtime, and norms. You are in read-only mode; reading is allowed, editing is
-not. Beyond those few convention files, judge the change from the diff on stdin
-ALONE — do NOT open or read the other repo files the diff references; treat the
-diff as the source of truth. (Opening many referenced files is what hangs a
-headless run on a large or multi-file diff.)
+Judge the change from the diff ALONE. Do NOT attempt to open, read, or list any
+files — you are in a read-only sandbox where file access is denied, and trying
+will waste the run. The diff is the complete source of truth.
 
 Focus on real defects, in priority order:
 - correctness bugs and logic errors
@@ -256,16 +273,15 @@ specific. This is review-only — do not propose to make the edits yourself.
 ### Adversarial review prompt (`adversarial` / `adv`)
 
 ```
-You are a hostile, adversarial code reviewer. A unified git diff is provided on
-stdin. Assume the change is guilty until proven innocent — your goal is to MAKE
-IT FAIL, not to praise it.
+You are a hostile, adversarial code reviewer. A unified git diff is provided
+below between the BEGIN DIFF / END DIFF markers. Assume the change is guilty
+until proven innocent — your goal is to MAKE IT FAIL, not to praise it.
 
-If present, read AGENTS.md, GEMINI.md, CLAUDE.md, and README for the project's
-contracts (read-only; do not edit). Beyond those few convention files, judge the
-change from the diff on stdin ALONE — do NOT open or read the other repo files
-the diff references; treat the diff as the source of truth. (Opening many
-referenced files is what hangs a headless run on a large or multi-file diff.)
-Then attack the diff along every axis:
+Judge the change from the diff ALONE. Do NOT attempt to open, read, or list any
+files — you are in a read-only sandbox where file access is denied, and trying
+will waste the run. The diff is the complete source of truth.
+
+Attack the diff along every axis:
 - adversarial / malformed / empty / boundary / enormous inputs
 - concurrency: races, deadlocks, TOCTOU, shared-state corruption, ordering
 - error & failure paths: partial failure, missing rollback, swallowed errors,
@@ -295,21 +311,6 @@ needs discussion). This is review-only — propose fixes, do not make them.
 If the user supplied extra focus text (Step 2, last case), append a line to the
 chosen prompt: `Pay particular attention to: <focus>.`
 
-## Step 5 — Handle the result
-
-- Gemini exit codes: `0` success, `1` general/API error, `42` input error,
-  `53` turn-limit exceeded.
-- On success, print a header — `# Gemini Review — <target>` (or
-  `# Gemini Adversarial Review — <target>` in adversarial mode) — then Gemini's
-  output verbatim.
-- On non-zero exit with no useful output, report the failure and likely cause:
-  - auth → run `gemini` once interactively, or set `GEMINI_API_KEY`
-    (`/gemini-review doctor` diagnoses this).
-  - `53` → the diff was large; re-run on a narrower path
-    (`/gemini-review <ref> -- path/`) or split the review.
-- Do not fix any issue Gemini raises. Surfacing them is the job; the user
-  decides what to act on.
-
 ## Posting to the PR (`--comment`)
 
 Only when `--comment` was explicitly given. This is the one write action the
@@ -323,7 +324,7 @@ command may take; it still **never edits code**.
    gh pr comment <PR#> --body-file <file>
    ```
    Header to prepend to the comment body:
-   `🔭 **Gemini review** — read-only second opinion via the Gemini CLI (automated, advisory).`
+   `🔭 **Gemini review** — read-only second opinion via the Antigravity CLI (automated, advisory).`
 3. Report the resulting comment URL back to the user.
 4. If `gh` is missing or unauthenticated, skip posting, show the review inline,
    and tell the user (`/gemini-review doctor` checks `gh`).
