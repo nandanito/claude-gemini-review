@@ -12,26 +12,75 @@ complementary to `/codex:review`. Argument: `$ARGUMENTS`.
 Tokenize `$ARGUMENTS` and consume in **exactly this order**. Each step removes
 what it claims; later steps only ever see the remainder.
 
+**Rule 0 — a quoted span is opaque.** Text inside `--focus "…"` is never matched
+as a flag, a separator, or a target by *any* step below, including the bare `--`
+split. Lift quoted focus spans out first and set them aside. This is what lets
+focus prose read naturally: `--focus "the retry logic -- especially the backoff"`
+keeps its dash instead of splitting into a bogus pathspec, and `--focus "check
+the adversarial path"` stays a standard review. Unquoted arguments have no such
+protection, which is why quoting long focus text is the recommended form.
+
 1. First token is **`doctor`** → run the **Doctor** health check below and stop.
    Ignore all other arguments.
 2. **Split on the first bare `--`.** Everything *after* it is a **`$PATHSPEC`**
    (a path filter passed straight to `git diff`), never a target and never focus
    text. Everything before it continues through the steps below.
    `$PATHSPEC` is empty when there is no `--`.
-   **Do this before any other token matching** — otherwise `-- src/` is
-   swallowed as focus text and silently reviews the wrong thing.
+   **Do this before any other token matching** (but after Rule 0 sets quoted
+   spans aside) — otherwise `-- src/` is swallowed as focus text and silently
+   reviews the wrong thing.
    (`--comment`, `--focus`, `--save`, and `--working` are flags, not the bare
    `--` separator; do not split on them.)
-3. **`adversarial`** (or **`adv`**) → use the **Adversarial review prompt**
-   instead of the standard one. Remove the token.
-4. **`--comment`** → after the review, **post the findings to the PR** (see
+3. **`--focus` — extract next, and take the WHOLE block.** Focus text is free
+   prose, so it comes out ahead of every *mode* match below (steps 4–7);
+   otherwise its own words get eaten as flags. Two forms:
+   - **Quoted** — `--focus "…"` → take exactly the quoted span, however many
+     lines or tokens it spans. Parsing then **resumes after the closing quote**,
+     so other flags may appear on either side.
+   - **Unquoted** — `--focus <text>` → consume **everything from after the flag
+     to the end of the pre-`--` input**, not just the next token.
+
+   Never consume only the first token after `--focus`. Given
+   `/gemini-review --focus check retry logic`, taking just `check` would leave
+   `retry` to be read as a **git ref** and `logic` as leftover focus — a review
+   of the wrong target that still looks successful.
+
+   Because the unquoted form runs to the end, **any other flag or target must
+   come before it**: `/gemini-review 42 adversarial --focus <long text>`.
+   Tokens *preceding* `--focus` are untouched and continue through the steps
+   below. When in doubt, quote the focus text.
+4. **`adversarial`** (or **`adv`**) → use the **Adversarial review prompt**
+   instead of the standard one. Remove the token. *(Matched only on what
+   survives step 3, so the word `adversarial` inside quoted focus text stays
+   part of the focus and does not switch modes.)*
+5. **`--comment`** → after the review, **post the findings to the PR** (see
    *Posting to the PR*). Remove the token.
-5. **`--save <path>`** → also write the review to `<path>` (see *Saving the
-   review*). Remove the flag *and* its argument.
-6. **`--focus <text>`** → explicit focus text (see Step 2b). Remove the flag
-   and its argument.
+6. **`--save <path>`** → also write the review to `<path>` (see *Saving the
+   review*). Remove the flag *and* its single path argument.
 7. Of what remains: the **target** (Step 2), then any leftover is **focus
-   text** (Step 2b).
+   text** (Step 2b), appended to anything `--focus` already supplied.
+
+### Worked examples — the parse must produce exactly these
+
+| input (after `/gemini-review`) | target | mode | pathspec | focus |
+|---|---|---|---|---|
+| *(empty)* | branch vs base | standard | — | — |
+| `42 --comment` | PR 42 | standard | — | — |
+| `develop -- src/` | `develop` | standard | `src/` | — |
+| `--focus check retry logic` | branch vs base | standard | — | `check retry logic` |
+| `42 --focus check retry logic` | PR 42 | standard | — | `check retry logic` |
+| `--focus "check the adversarial path"` | branch vs base | **standard** | — | `check the adversarial path` |
+| `adversarial --focus "the retry logic -- especially backoff"` | branch vs base | adversarial | **—** | `the retry logic -- especially backoff` |
+| `42 adversarial --save r.md --focus "…"` | PR 42 | adversarial | — | `…` |
+
+Rows 4–5 are the ones a naive tokenizer gets wrong: it would take only `check`
+and then read `retry` as a git ref. Rows 6–7 are Rule 0 — `adversarial` and
+` -- ` inside a quoted span must **not** change the mode or become a pathspec.
+
+**Echo the parse back before running.** State the target, mode, pathspec, and
+whether focus text was found, in one line. Every failure mode above produces a
+*plausible-looking* review of the wrong thing; showing the parse is what makes a
+misread visible instead of silent.
 
 ## Core constraint
 
@@ -160,10 +209,17 @@ Focus text is the single biggest quality lever this command has, and it
 ```
 
 Accept focus text from either form:
-- **`--focus <text>`** — explicit, unambiguous, and the form to prefer when the
-  text is long or could be mistaken for a ref.
+- **`--focus <text>`** — explicit and the form to prefer whenever the text is
+  long, multi-line, or could be mistaken for a ref. It takes the **entire**
+  block (parse step 3), never just the next word.
 - **Whatever remains** once mode tokens (`adversarial`, `--comment`) and the
   target have been consumed.
+
+**Quoting.** `--focus "…"` is the robust form: the quoted span is lifted out
+before any other matching, so focus prose containing words like `adversarial`,
+`main`, or `wip` stays focus prose instead of silently switching the mode or
+retargeting the review. Unquoted focus runs to the end of the input, so put any
+other flag or the target *before* it.
 
 **Focus text may be long and structured** — a multi-paragraph block with
 numbered claims, specific file/section pointers, and named concerns is a
