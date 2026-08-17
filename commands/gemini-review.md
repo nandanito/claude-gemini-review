@@ -343,6 +343,13 @@ instruct the model to do both — see the focus block in Step 4.
   OUT="$(mktemp)"; ERR="$(mktemp)"
   trap 'rm -f "$DIFF_FILE" "$PROMPT_FILE" "$OUT" "$ERR"' EXIT
 
+  # Fill these in from the parse. They are ordinary shell values — this block is
+  # meant to RUN as written, not to be read as pseudocode.
+  TARGET_KIND=branch          # branch | ref | wip   (pr never reaches here)
+  BASE=main                   # or the detected default branch
+  REF=                        # set when TARGET_KIND=ref
+  PATHS=()                    # one element per pathspec, e.g. PATHS=(src/ tests/)
+
   # STEP A — the TARGET selects the diff arguments. Never hard-code "$BASE" here:
   # the target may be an explicit ref, or `wip`, which is a TWO-dot working-tree
   # diff — a different form entirely, not just a different revision. Getting this
@@ -363,8 +370,9 @@ instruct the model to do both — see the focus block in Step 4.
   # "src/ tests/". That matches nothing, so the guard below aborts with "nothing
   # to review" — a valid two-path request rejected as if it were empty.
   # Equally, `--` must stay its own word or git rejects the invocation outright.
-  if [ <the parse-step-2 pathspec list is non-empty> ]; then
-    set -- "$@" -- <pathspec list, one argument per path>
+  # The count guard also keeps "${PATHS[@]}" from being expanded when empty.
+  if [ "${#PATHS[@]}" -gt 0 ]; then
+    set -- "$@" -- "${PATHS[@]}"
   fi
 
   git diff "$@" | tr -d '\000' > "$DIFF_FILE"
@@ -656,27 +664,39 @@ the user named, and touches nothing else. It is strictly safer than `--comment`,
 which publishes to a shared, externally-visible place. It still **never edits
 code**.
 
-1. **Refuse to clobber silently.** If `<path>` exists, do not overwrite it
-   without saying so — report the existing path and stop, or write alongside it.
-   The user asked to keep a review, not to lose one.
-2. If `<path>` is a directory, write `gemini-review-<slug>-<timestamp>.md`
-   inside it — where `<slug>` is the target **made filename-safe first**.
+**Resolve the destination first, then check for clobbering.** Order matters: a
+directory *always* exists, so testing "does `<path>` exist?" before testing
+"is it a directory?" makes the directory case unreachable — every
+`--save ~/reviews/` would stop with "that already exists" instead of writing
+inside it.
 
-   Targets are routinely branch names containing slashes (`feature/foo`,
-   `release/v1.2.3`). Interpolating one raw turns the slash into a **path
-   separator**, so the write either fails on a missing intermediate directory
-   or silently lands somewhere other than the file you meant:
+1. **Resolve `<path>` to a single output file, `$OUT_PATH`.**
+   - **`<path>` is an existing directory** → write
+     `gemini-review-<slug>-<timestamp>.md` *inside* it, where `<slug>` is the
+     target **made filename-safe first**.
 
-   ```bash
-   SLUG="$(printf '%s' "$TARGET" | tr '/ :~^?*[]\\' '-' | tr -s '-' | sed 's/^-*//; s/-*$//')"
-   : "${SLUG:=review}"            # empty/degenerate target must not yield a dotfile or bare -.md
-   OUT_PATH="$SAVE_DIR/gemini-review-${SLUG}-$(date +%Y%m%d-%H%M%S).md"
-   ```
+     Targets are routinely branch names containing slashes (`feature/foo`,
+     `release/v1.2.3`). Interpolating one raw turns the slash into a **path
+     separator**, so the write either fails on a missing intermediate directory
+     or silently lands somewhere other than the file you meant:
 
-   This collapses path separators and other path-hostile characters to `-`, so
-   `feature/foo` becomes `gemini-review-feature-foo-<ts>.md` and the result is
-   always a single file directly inside `<path>`. The same applies to the
-   `--comment` path only insofar as it never touches the filesystem.
+     ```bash
+     SLUG="$(printf '%s' "$TARGET" | tr '/ :~^?*[]\\' '-' | tr -s '-' | sed 's/^-*//; s/-*$//')"
+     : "${SLUG:=review}"          # empty/degenerate target must not yield a dotfile or bare -.md
+     OUT_PATH="$SAVE_DIR/gemini-review-${SLUG}-$(date +%Y%m%d-%H%M%S).md"
+     ```
+
+     This collapses path separators and other path-hostile characters to `-`, so
+     `feature/foo` becomes `gemini-review-feature-foo-<ts>.md` and the result is
+     always a single file directly inside `<path>`.
+   - **Otherwise** → `OUT_PATH="<path>"`, taken literally.
+
+   The timestamp means the directory form is inherently non-clobbering: repeated
+   saves into the same directory accumulate rather than overwrite.
+2. **Refuse to clobber silently — checked against `$OUT_PATH`, not `<path>`.**
+   If `$OUT_PATH` already exists, do not overwrite it without saying so: report
+   the existing path and stop, or write alongside it. The user asked to keep a
+   review, not to lose one.
 3. Write the title, then **`$PROVENANCE`**, then `$RESPONSE` **verbatim**:
    ```markdown
    # Gemini Review — <target>
