@@ -23,7 +23,7 @@ it shows the older, slower Gemini CLI run; the review format is unchanged.</sub>
 /gemini-review 42         # review GitHub PR #42
 /gemini-review develop    # diff against a ref/branch
 /gemini-review wip        # include uncommitted work
-/gemini-review "focus on the retry logic"   # add an extra focus area
+/gemini-review develop -- src/   # restrict to a path
 ```
 
 Findings are returned **verbatim** — severity-tagged (CRITICAL/HIGH/MEDIUM/LOW),
@@ -34,18 +34,76 @@ with file:line, the problem, and a recommended fix, ending in a one-line verdict
 ```
 /gemini-review adversarial      # hostile pass — assume it's broken, try to make it fail
 /gemini-review adversarial 42   # …on a specific PR
+/gemini-review --focus "..."    # point the review at specific concerns (see below)
+/gemini-review --save review.md # keep the review as a file
 /gemini-review 42 --comment     # post the findings to PR #42 as a comment (needs gh)
-/gemini-review doctor           # check agy, auth, and headless mode are working
+/gemini-review doctor           # check agy, auth, jq, and headless mode are working
 ```
 
 - **`adversarial`** swaps in a skeptical prompt that hunts for races, bad
   inputs, error paths, overflow, and security holes — and demands a concrete
   failing scenario for each. Same speed as a normal review (one pass).
-- **`--comment`** posts the review verbatim to the pull request (the only write
-  the command makes — it still never edits code). Resolves the PR from the
-  argument or the current branch.
+- **`--focus`** is the highest-value flag here. [See below](#focus-text-the-highest-value-lever).
+- **`--save <path>`** writes the review verbatim to a file with a provenance
+  header (target, model, effort, mode). Useful when there's no PR to comment on
+  and you want the review to outlive your scrollback.
+- **`--comment`** posts the review verbatim to the pull request. Resolves the PR
+  from the argument or the current branch.
 - **`doctor`** runs a tiny live call to confirm auth and headless print mode
   work end to end — the failure modes static checks miss.
+
+`--save` and `--comment` are the only writes the command makes, both opt-in and
+both containing nothing but the review. It never edits code.
+
+## Focus text: the highest-value lever
+
+Focus text is the difference between a decent review and a targeted one, and it
+composes with every target:
+
+```
+/gemini-review 42 --focus "the nonce derivation and the hybrid rejection argument"
+/gemini-review develop --focus "..."
+/gemini-review wip --focus "..."
+```
+
+**Focus text is allowed to be long and structured.** A multi-paragraph block
+with numbered claims and specific pointers is the intended use, not an abuse of
+the argument — pass it through a shell variable or a quoted heredoc:
+
+```bash
+/gemini-review --focus "$(cat <<'EOF'
+Check these specific claims, by name, and say so explicitly if each is sound:
+
+1. ADR-002 rejects the hybrid approach on the grounds that it doubles write
+   amplification. Verify that reasoning actually follows from the benchmark
+   table above it — I think the table measures a different workload.
+2. The 'homomorphism' claim in findings.md section 4 asserts f(a·b) = f(a)·f(b)
+   for the encoding. Check the algebra, not the prose around it.
+3. Citations: the same source line is cited in five places. Confirm they agree.
+
+Beyond these, do your normal sweep and report anything else you find.
+EOF
+)"
+```
+
+**Focus adds priorities; it does not narrow scope.** This matters more than it
+sounds. Focused and unfocused runs find *different* defects and neither is a
+superset of the other — in one measured comparison the focused run caught two
+substantive reasoning errors the unfocused run never reached, while the
+unfocused run opened with a genuine CRITICAL and caught a cross-document
+citation inconsistency that the focused run missed. The prompt therefore
+instructs the model to address every focus item by name **and** complete the
+standard sweep, so you get both sets rather than trading one for the other.
+
+### It works on prose, not just code
+
+The prompts are written in code-review vocabulary (TOCTOU, SSRF, unchecked
+casts), which looks like it would return a false "CRITICAL: none" on a
+documentation diff. Tested against a 95 KB prose diff — research findings and
+ADRs — it does not: the model treats "code reviewer" as a *stance*, not a
+content filter. It reviewed the reasoning, opened with a genuine CRITICAL, and
+returned fix-before-merge. Reviewing design docs, ADRs, and specs is a supported
+use; reach for `--focus` to point it at the specific claims you want checked.
 
 ## How it works
 
@@ -98,8 +156,13 @@ passed as cheap defense-in-depth.
   agy            # run once interactively to sign in
   ```
   `agy update` upgrades in place; `agy --version` reports the build.
+- **`jq`** (or `python3`) — used to check whether the review actually produced
+  output. Not cosmetic: without a JSON parser that check degrades and an empty
+  review can read as a clean one. `brew install jq` / `apt install jq`.
 - **git** (always) and the **GitHub CLI** (`gh`) only for the PR-number form
   (`/gemini-review 42`) and `--comment`.
+
+`/gemini-review doctor` verifies all of these, including `jq`.
 
 ## Install
 
@@ -148,10 +211,19 @@ changed.
 
 ## A note on speed
 
-`agy` is substantially faster than the old Gemini CLI. A ~10 KB, ~250-line diff
-reviews in roughly **10–15 seconds**, where the Gemini version budgeted about a
-second per line of diff. The command just runs it and waits — no backgrounding,
-no polling.
+`agy` is substantially faster than the old Gemini CLI, and — more usefully — it
+**scales sub-linearly**:
+
+| prompt | time | output |
+|---|---|---|
+| ~10 KB (~250 lines) | ~12–16 s | ~2 KB |
+| ~98 KB | ~46 s | ~15 KB (78 K in, 10 K thinking, 15 K out) |
+
+**10× the input costs about 3× the time.** So don't pre-emptively split a large
+diff — one 95 KB review finishing in under a minute usually beats three narrow
+ones, and narrowing risks missing problems that span files. Run the whole thing;
+narrow only if it actually drags. The command just runs it and waits — no
+backgrounding, no polling.
 
 To tune further:
 - **Faster model for large diffs:** `--model gemini-3.6-flash-medium`. Run
@@ -183,7 +255,8 @@ To tune further:
   NUL bytes so it's reviewed anyway.
 - **The review doesn't follow our conventions** → the model **cannot** read
   `AGENTS.md` / `CLAUDE.md` / `README` (those reads are denied). Pass what
-  matters as focus text: `/gemini-review "we never throw in handlers"`.
+  matters via [focus text](#focus-text-the-highest-value-lever):
+  `/gemini-review --focus "we never throw in handlers"`.
 - **Auth errors** → run `/gemini-review doctor`, which makes one tiny live call
   to check auth and headless mode end to end.
 

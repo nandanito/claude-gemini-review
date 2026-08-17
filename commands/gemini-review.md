@@ -1,5 +1,5 @@
 ---
-description: Review the current branch's PR diff with the Antigravity CLI (agy) — read-only second opinion. Modes — adversarial, doctor; flag — --comment posts findings to the PR.
+description: Review the current branch's PR diff with the Antigravity CLI (agy) — read-only second opinion. Modes — adversarial, doctor; flags — --focus targets the review, --save writes it to a file, --comment posts it to the PR.
 ---
 
 You are running a **second-opinion code review** using the **Antigravity CLI
@@ -9,23 +9,37 @@ complementary to `/codex:review`. Argument: `$ARGUMENTS`.
 
 ## Modes — parse `$ARGUMENTS` first
 
-Tokenize `$ARGUMENTS` and route before doing anything else:
+Tokenize `$ARGUMENTS` and consume in **exactly this order**. Each step removes
+what it claims; later steps only ever see the remainder.
 
-- First token is **`doctor`** → run the **Doctor** health check below and stop.
-  Ignore all other arguments.
-- A token is **`adversarial`** (or **`adv`**) → use the **Adversarial review
-  prompt** instead of the standard one. Remove the token; the rest selects the
-  target.
-- **`--comment`** appears anywhere → after the review, **post the findings to
-  the PR** (see *Posting to the PR*). Remove the token; the rest selects the
-  target.
-- Whatever remains selects the **target** (see Step 2).
+1. First token is **`doctor`** → run the **Doctor** health check below and stop.
+   Ignore all other arguments.
+2. **Split on the first bare `--`.** Everything *after* it is a **`$PATHSPEC`**
+   (a path filter passed straight to `git diff`), never a target and never focus
+   text. Everything before it continues through the steps below.
+   `$PATHSPEC` is empty when there is no `--`.
+   **Do this before any other token matching** — otherwise `-- src/` is
+   swallowed as focus text and silently reviews the wrong thing.
+   (`--comment`, `--focus`, `--save`, and `--working` are flags, not the bare
+   `--` separator; do not split on them.)
+3. **`adversarial`** (or **`adv`**) → use the **Adversarial review prompt**
+   instead of the standard one. Remove the token.
+4. **`--comment`** → after the review, **post the findings to the PR** (see
+   *Posting to the PR*). Remove the token.
+5. **`--save <path>`** → also write the review to `<path>` (see *Saving the
+   review*). Remove the flag *and* its argument.
+6. **`--focus <text>`** → explicit focus text (see Step 2b). Remove the flag
+   and its argument.
+7. Of what remains: the **target** (Step 2), then any leftover is **focus
+   text** (Step 2b).
 
 ## Core constraint
 
 - This command is **review-only**. Do not fix issues, apply patches, or edit
-  files. The single write action permitted is posting a PR comment, and only
-  when `--comment` was explicitly requested.
+  code. Exactly **two** write actions are permitted, each only when its flag was
+  explicitly requested: writing the review to the path given by `--save`, and
+  posting it to the PR with `--comment`. Both write the review and nothing else;
+  neither ever modifies a source file.
 - **Never pass `--dangerously-skip-permissions`.** That flag is the entire
   safety boundary — see *The safety model* below. `--mode plan` is **not** a
   read-only guarantee in `agy`; do not rely on it as one.
@@ -75,7 +89,19 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
    - **empty output** → *not* a hang. Read stderr: an auth failure, or a tool
      was auto-denied. See *Empty response* in Step 5.
    - **Do not judge this by the exit code** — `agy` exits `0` even on failure.
-4. **`gh` for PR features** (optional — only needed for PR-number targets and
+4. **A JSON parser for the success check** — **not optional**, because Step 5
+   decides "did this review actually happen?" with it. If it is missing, the
+   `.response` check silently degrades and an empty review can read as a clean
+   one, which is precisely the failure this command exists to prevent.
+   ```bash
+   command -v jq || command -v python3
+   ```
+   - `jq` present → ✓.
+   - no `jq` but `python3` present → ✓ (Step 5's documented fallback); say which
+     one will be used.
+   - **neither** → ✗ **NOT READY**. Remediation: `brew install jq` (macOS) or
+     `apt install jq`. Do not fall back to grepping the JSON by hand.
+5. **`gh` for PR features** (optional — only needed for PR-number targets and
    `--comment`): `command -v gh` and `gh auth status`. Report as optional.
 
 ## Step 1 — Preflight (review modes)
@@ -96,12 +122,60 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
   branch's changes).
 - **A bare integer** (e.g. `42`) → a GitHub PR. Use `gh pr diff 42` for the
   diff and `gh pr view 42` for the title/body so the reviewer has the intent.
+  **`gh pr diff` takes no pathspec.** If `$PATHSPEC` is non-empty with a PR
+  target, filter the diff *after* fetching it (e.g. `git apply --stat` style
+  splitting, or `filterdiff`), or say plainly that the filter was not applied.
+  Do not silently ignore it.
 - **A git ref / branch name** (e.g. `develop`) → diff against it:
   `git diff <ref>...HEAD`.
 - **`wip` or `--working`** → include uncommitted work: `git diff HEAD`
   (unstaged + staged vs HEAD). Use this when reviewing before committing.
-- Anything else → treat as **extra focus text** layered on the default
-  branch-vs-base diff (append it to the chosen prompt's focus line).
+- Anything left over after a target has been identified → **focus text**
+  (see Step 2b). Focus text is *not* a target and never replaces one.
+
+**`$PATHSPEC` was already split off in step 2 of the parse** and is *not* part
+of the target. It applies on top of whichever target was selected, so
+`/gemini-review develop -- src/` means "diff against `develop`, restricted to
+`src/`". Every git-based target composes with it (the PR target is the one
+exception, noted above). When `$PATHSPEC` is non-empty,
+**say so in the report** and name what was excluded — a path filter is the
+easiest way to make "reviewed" quietly overclaim.
+
+**Tiebreak.** If the first token is both a plausible git ref and plausible prose
+(`main`, `master`, `test`), resolve it as a **ref** only when
+`git rev-parse --verify --quiet <token>` succeeds *and* no other target was
+given. Otherwise treat it as focus text. When ambiguous, say which reading you
+used in the report so a misread is visible rather than silent.
+
+## Step 2b — Focus text (the highest-value lever)
+
+Focus text is the single biggest quality lever this command has, and it
+**composes with every target**. All of these are valid:
+
+```
+/gemini-review 42 "the nonce derivation and the hybrid rejection argument"
+/gemini-review develop --focus "..."
+/gemini-review wip --focus "..."
+/gemini-review "..."                 # focus on the default branch diff
+```
+
+Accept focus text from either form:
+- **`--focus <text>`** — explicit, unambiguous, and the form to prefer when the
+  text is long or could be mistaken for a ref.
+- **Whatever remains** once mode tokens (`adversarial`, `--comment`) and the
+  target have been consumed.
+
+**Focus text may be long and structured** — a multi-paragraph block with
+numbered claims, specific file/section pointers, and named concerns is a
+legitimate and effective input, not an abuse of the argument. Pass it through
+**verbatim**, preserving line breaks and structure. Do not summarize, truncate,
+or collapse it to one line.
+
+**Focus ADDS priority; it never replaces the standard sweep.** This matters:
+targeted and untargeted reviews find *different* defects, and neither is a
+superset of the other. A focused run reliably hits what you pointed it at; the
+standard sweep catches unrelated problems you did not know to ask about. Always
+instruct the model to do both — see the focus block in Step 4.
 
 ## Step 3 — Gather the diff
 
@@ -145,9 +219,18 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
 silently reviews nothing — the model receives no input and either invents a
 review or returns empty. The diff must be embedded in the prompt string.
 
+The focus block goes **before** the diff, not after it. A single trailing line
+appended below a 90 KB diff is the weakest possible placement; a delimited block
+stated up front is what the model actually steers on.
+
 ```bash
 {
   printf '%s\n\n' "$REVIEW_PROMPT"
+  if [ -n "$FOCUS" ]; then
+    printf -- '--- PRIORITY FOCUS ---\n'
+    printf '%s\n' "$FOCUS"          # verbatim: keep line breaks and structure
+    printf -- '--- END PRIORITY FOCUS ---\n\n'
+  fi
   printf -- '--- BEGIN DIFF ---\n'
   cat "$DIFF_FILE"
   printf -- '--- END DIFF ---\n'
@@ -213,7 +296,23 @@ found nothing" when in fact nothing was reviewed. Report the failure instead.
 
 - **On success** — print a header (`# Gemini Review — <target>`, or
   `# Gemini Adversarial Review — <target>` in adversarial mode) then
-  `$RESPONSE` **verbatim**. Mention the model if you overrode it.
+  `$RESPONSE` **verbatim**.
+
+**Record the model yourself — the envelope does not carry it.** The JSON is
+exactly `conversation_id`, `status`, `response`, `duration_seconds`,
+`num_turns`, `usage`. There is **no `model` field**, so which model produced a
+review is unrecoverable after the fact unless the command writes it down. Track
+what you passed and state it in the report and in any saved/posted copy:
+
+```bash
+MODEL="${MODEL:-<agy default>}"    # whatever you passed to --model, or the default
+EFFORT="${EFFORT:-<agy default>}"
+```
+
+Report the provenance line as: `model: $MODEL · effort: $EFFORT · focus: yes/no
+· pathspec: <value or none>`. A review whose model is unknown cannot be compared
+against a later one, and "which model said this?" is the first question anyone
+asks about a surprising finding.
 - **Empty response** → read `$ERR`, which carries the real diagnostic:
   - *"a tool required the `read_file` permission … auto-denied"* → the prompt
     told the model to open files. Reinforce the "judge from the diff alone"
@@ -223,13 +322,19 @@ found nothing" when in fact nothing was reviewed. Report the failure instead.
 - Do not fix any issue the review raises. Surfacing them is the job; the user
   decides what to act on.
 
-**Speed.** `agy` is dramatically faster than the old Gemini CLI — a ~10 KB /
-~250-line diff reviews in roughly **10–15 seconds**, not the minutes the Gemini
-version took. Just run it and wait; there is no need to background it. Levers if
-a big diff drags:
+**Speed — it scales sub-linearly, so do not pre-emptively narrow.** Measured:
+
+| prompt | time | output |
+|---|---|---|
+| ~10 KB (~250 lines) | ~12–16 s | ~2 KB |
+| ~98 KB | ~46 s | ~15 KB (78 K in, 10 K thinking, 15 K out) |
+
+**10× the input costs about 3× the time.** A large diff is far cheaper than the
+linear estimate suggests, so run the whole thing first and narrow only if it
+actually drags. Just run it and wait; there is no need to background it. Levers
+if one does drag:
 - **Faster model:** `--model gemini-3.6-flash-medium` (see `agy models` for the
-  current list; `gemini-3.1-pro-high` is the high-reasoning end). Say which
-  model you used in the report.
+  current list; `gemini-3.1-pro-high` is the high-reasoning end).
 - **Reasoning effort:** `--effort low|medium|high` — `high` for a small,
   high-stakes change; `low` for a large mechanical one.
 - **Narrow the diff** to source paths, skipping docs, lockfiles, and generated
@@ -308,13 +413,71 @@ explicitly. End with a one-line verdict (safe to merge / fix-before-merge /
 needs discussion). This is review-only — propose fixes, do not make them.
 ```
 
-If the user supplied extra focus text (Step 2, last case), append a line to the
-chosen prompt: `Pay particular attention to: <focus>.`
+### Focus clause — append to whichever prompt was chosen
+
+Only when `$FOCUS` is non-empty. Append this to the prompt text; the focus
+content itself goes in the `--- PRIORITY FOCUS ---` block (Step 4), not here.
+
+```
+A PRIORITY FOCUS block is provided above the diff. Treat every item in it as a
+first-class review target: address each one explicitly, by name, and say so
+directly if you find no problem with it.
+
+The focus block ADDS priorities — it does not narrow your scope. Still perform
+the full review described above and report unrelated defects you find along the
+way. A finding that nobody asked about is worth more, not less.
+```
+
+**Why additive.** Focused and unfocused runs surface *different* defects and
+neither subsumes the other: an unfocused pass has caught a genuine CRITICAL and
+a cross-document citation inconsistency that a focused pass missed, while the
+focused pass caught two substantive reasoning errors the unfocused pass never
+reached. Suppressing the general sweep to honor the focus would trade one set of
+real findings for another instead of getting both.
+
+## Saving the review (`--save <path>`)
+
+Only when `--save` was explicitly given. A review that exists only in scrollback
+is gone the moment the session ends, and `--comment` is not a substitute — it
+requires a PR to exist, and not every review has one. `--save` writes the same
+verbatim output to a file with the same provenance header.
+
+This is a **write, but a narrow one**: it creates or overwrites exactly the path
+the user named, and touches nothing else. It is strictly safer than `--comment`,
+which publishes to a shared, externally-visible place. It still **never edits
+code**.
+
+1. **Refuse to clobber silently.** If `<path>` exists, do not overwrite it
+   without saying so — report the existing path and stop, or write alongside it.
+   The user asked to keep a review, not to lose one.
+2. If `<path>` is a directory, write
+   `<path>/gemini-review-<target>-<timestamp>.md` inside it.
+3. Write the **provenance header, then `$RESPONSE` verbatim**:
+   ```markdown
+   # Gemini Review — <target>
+
+   🔭 Read-only second opinion via the Antigravity CLI (`agy`) — automated, advisory.
+
+   - target: <target>   · pathspec: <value or none>
+   - model: <MODEL>     · effort: <EFFORT>
+   - mode: standard | adversarial   · focus: yes/no
+   - reviewed: <N> files, <N> lines   · duration: <duration_seconds>s
+   ```
+   The provenance block is the point — see *Record the model yourself* in
+   Step 5. A saved review with no model or target recorded is nearly worthless
+   six weeks later.
+4. **Never write on an empty `$RESPONSE`.** Step 5 already treats that as a hard
+   stop; saving an empty review to disk turns a transient failure into a durable
+   artifact that reads like a clean pass.
+5. Report the path you wrote back to the user.
+
+`--save` and `--comment` compose — with both, write the file *and* post, from
+the same `$RESPONSE`, so the two copies cannot disagree.
 
 ## Posting to the PR (`--comment`)
 
-Only when `--comment` was explicitly given. This is the one write action the
-command may take; it still **never edits code**.
+Only when `--comment` was explicitly given. This is the one *externally
+visible* write the command makes; it still **never edits code**.
 
 1. Resolve the PR number: if the target was a PR number, use it; otherwise find
    the PR for the current branch (`gh pr view --json number,url`). If there is
