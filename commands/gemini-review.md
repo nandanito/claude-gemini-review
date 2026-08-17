@@ -396,8 +396,8 @@ step and emit a review header with nothing under it — that reads as "reviewed,
 found nothing" when in fact nothing was reviewed. Report the failure instead.
 
 - **On success** — print a header (`# Gemini Review — <target>`, or
-  `# Gemini Adversarial Review — <target>` in adversarial mode) then
-  `$RESPONSE` **verbatim**.
+  `# Gemini Adversarial Review — <target>` in adversarial mode), then
+  **`$PROVENANCE`** (defined just below), then `$RESPONSE` **verbatim**.
 
 **Record the model yourself — the envelope does not carry it.** The JSON is
 exactly `conversation_id`, `status`, `response`, `duration_seconds`,
@@ -410,10 +410,27 @@ MODEL="${MODEL:-<agy default>}"    # whatever you passed to --model, or the defa
 EFFORT="${EFFORT:-<agy default>}"
 ```
 
-Report the provenance line as: `model: $MODEL · effort: $EFFORT · focus: yes/no
-· pathspec: <value or none>`. A review whose model is unknown cannot be compared
-against a later one, and "which model said this?" is the first question anyone
-asks about a surprising finding.
+### The canonical provenance block — `$PROVENANCE`
+
+Build this **once** and reuse it verbatim in **every** output: the inline
+report, the `--save` file, and the `--comment` body. It is defined here, in one
+place, on purpose — the saved and posted copies are easy to drift apart, and a
+posted finding with no provenance is exactly the one someone will question.
+
+```markdown
+🔭 Read-only second opinion via the Antigravity CLI (`agy`) — automated, advisory.
+
+- target: <target>   · pathspec: <value or none>
+- model: <MODEL>     · effort: <EFFORT>
+- mode: standard | adversarial   · focus: yes/no
+- reviewed: <N> files, <N> lines   · duration: <duration_seconds>s
+```
+
+Referred to as **`$PROVENANCE`** throughout the rest of this file. A review
+whose model is unknown cannot be compared against a later one, and "which model
+said this?" is the first question anyone asks about a surprising finding — which
+is most likely to be asked about the copy posted to a PR, where the reader was
+not present for the run.
 - **Empty response** → read `$ERR`, which carries the real diagnostic:
   - *"a tool required the `read_file` permission … auto-denied"* → the prompt
     told the model to open files. Reinforce the "judge from the diff alone"
@@ -569,20 +586,17 @@ code**.
    `feature/foo` becomes `gemini-review-feature-foo-<ts>.md` and the result is
    always a single file directly inside `<path>`. The same applies to the
    `--comment` path only insofar as it never touches the filesystem.
-3. Write the **provenance header, then `$RESPONSE` verbatim**:
+3. Write the title, then **`$PROVENANCE`**, then `$RESPONSE` **verbatim**:
    ```markdown
    # Gemini Review — <target>
 
-   🔭 Read-only second opinion via the Antigravity CLI (`agy`) — automated, advisory.
+   <$PROVENANCE — see Step 5 for the canonical block>
 
-   - target: <target>   · pathspec: <value or none>
-   - model: <MODEL>     · effort: <EFFORT>
-   - mode: standard | adversarial   · focus: yes/no
-   - reviewed: <N> files, <N> lines   · duration: <duration_seconds>s
+   <$RESPONSE, verbatim>
    ```
-   The provenance block is the point — see *Record the model yourself* in
-   Step 5. A saved review with no model or target recorded is nearly worthless
-   six weeks later.
+   Use the block exactly as defined in Step 5; do not re-derive a shorter one
+   here. A saved review with no model or target recorded is nearly worthless six
+   weeks later.
 4. **Never write on an empty `$RESPONSE`.** Step 5 already treats that as a hard
    stop; saving an empty review to disk turns a transient failure into a durable
    artifact that reads like a clean pass.
@@ -599,12 +613,22 @@ visible* write the command makes; it still **never edits code**.
 1. Resolve the PR number: if the target was a PR number, use it; otherwise find
    the PR for the current branch (`gh pr view --json number,url`). If there is
    no open PR, do **not** post — show the review and say no PR was found.
-2. Post the review **verbatim**, prefixed with a provenance header, via:
+2. Post **`$PROVENANCE`** followed by `$RESPONSE` **verbatim**, via:
    ```bash
    gh pr comment <PR#> --body-file <file>
    ```
-   Header to prepend to the comment body:
-   `🔭 **Gemini review** — read-only second opinion via the Antigravity CLI (automated, advisory).`
+   Comment body layout — the **same** block `--save` writes, not a shortened
+   one-line variant:
+   ```markdown
+   <$PROVENANCE — see Step 5 for the canonical block>
+
+   <$RESPONSE, verbatim>
+   ```
+   The posted copy is the one that most needs provenance: its readers were not
+   present for the run, cannot see which model or effort produced it, and have
+   no way to recover that later (the JSON envelope has no `model` field). A PR
+   comment asserting a CRITICAL with no attribution is the hardest kind to act
+   on.
 3. Report the resulting comment URL back to the user.
 4. If `gh` is missing or unauthenticated, skip posting, show the review inline,
    and tell the user (`/gemini-review doctor` checks `gh`).

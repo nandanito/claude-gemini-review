@@ -47,7 +47,9 @@ with file:line, the problem, and a recommended fix, ending in a one-line verdict
 - **`--save <path>`** writes the review verbatim to a file with a provenance
   header (target, model, effort, mode). Useful when there's no PR to comment on
   and you want the review to outlive your scrollback.
-- **`--comment`** posts the review verbatim to the pull request. Resolves the PR
+- **`--comment`** posts the review verbatim to the pull request, with the same
+  provenance block — the posted copy needs it most, since its readers weren't
+  present for the run and can't recover the model afterward. Resolves the PR
   from the argument or the current branch.
 - **`doctor`** runs a tiny live call to confirm auth and headless print mode
   work end to end — the failure modes static checks miss.
