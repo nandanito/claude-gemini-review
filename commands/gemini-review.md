@@ -343,12 +343,18 @@ instruct the model to do both — see the focus block in Step 4.
   OUT="$(mktemp)"; ERR="$(mktemp)"
   trap 'rm -f "$DIFF_FILE" "$PROMPT_FILE" "$OUT" "$ERR"' EXIT
 
-  # Fill these in from the parse. They are ordinary shell values — this block is
-  # meant to RUN as written, not to be read as pseudocode.
-  TARGET_KIND=branch          # branch | ref | wip   (pr never reaches here)
-  BASE=main                   # or the detected default branch
-  REF=                        # set when TARGET_KIND=ref
-  PATHS=()                    # one element per pathspec, e.g. PATHS=(src/ tests/)
+  # These come from the parse (Steps 1–2): TARGET_KIND is branch|ref|wip (a pr
+  # target never reaches here), BASE/REF are revisions, PATHS holds one element
+  # per pathspec.
+  #
+  # `:=` supplies a default ONLY when the parse left a value unset — it never
+  # overwrites one. Plain assignment here would be a silent bug: `/gemini-review
+  # wip` or `-- src/` would be reset to the default branch diff and then reviewed
+  # under the requested target's name. An unset PATHS already counts 0, so it
+  # needs no initialiser and must not be clobbered with `PATHS=()`.
+  : "${TARGET_KIND:=branch}"
+  : "${BASE:=main}"           # or the default branch detected in Step 2
+  : "${REF:=}"                # set by the parse when TARGET_KIND=ref
 
   # STEP A — the TARGET selects the diff arguments. Never hard-code "$BASE" here:
   # the target may be an explicit ref, or `wip`, which is a TWO-dot working-tree
@@ -659,10 +665,12 @@ is gone the moment the session ends, and `--comment` is not a substitute — it
 requires a PR to exist, and not every review has one. `--save` writes the same
 verbatim output to a file with the same provenance header.
 
-This is a **write, but a narrow one**: it creates or overwrites exactly the path
-the user named, and touches nothing else. It is strictly safer than `--comment`,
-which publishes to a shared, externally-visible place. It still **never edits
-code**.
+This is a **write, but a narrow one**: it **creates** a single new file and
+touches nothing else. It **never overwrites an existing file** — see the
+clobber rule below, which is a hard stop, not a preference. That matters
+because `<path>` is arbitrary user input: pointed at a source file or a doc, an
+overwriting `--save` would destroy it, which no "review-only" command may ever
+do. It still **never edits code**.
 
 **Resolve the destination first, then check for clobbering.** Order matters: a
 directory *always* exists, so testing "does `<path>` exist?" before testing
@@ -693,10 +701,22 @@ inside it.
 
    The timestamp means the directory form is inherently non-clobbering: repeated
    saves into the same directory accumulate rather than overwrite.
-2. **Refuse to clobber silently — checked against `$OUT_PATH`, not `<path>`.**
-   If `$OUT_PATH` already exists, do not overwrite it without saying so: report
-   the existing path and stop, or write alongside it. The user asked to keep a
-   review, not to lose one.
+2. **Never overwrite — checked against `$OUT_PATH`, not `<path>`.** If
+   `$OUT_PATH` already exists, do **not** write to it. There is no "unless" and
+   no prompt-and-proceed: either report the existing path and stop, or write to
+   a non-colliding sibling (append `-2`, `-3`, … before the extension) and say
+   which path you actually used.
+
+   ```bash
+   if [ -e "$OUT_PATH" ]; then
+     echo "refusing to overwrite existing file: $OUT_PATH"; exit 1
+   fi
+   ```
+
+   `<path>` is arbitrary user input. A typo or a stale shell completion can
+   point it at a source file, and a review tool that silently replaces one has
+   done far more damage than failing to save. The user asked to keep a review,
+   not to lose a file.
 3. Write the title, then **`$PROVENANCE`**, then `$RESPONSE` **verbatim**:
    ```markdown
    # Gemini Review — <target>
