@@ -91,11 +91,20 @@ Beyond these, do your normal sweep and report anything else you find."
 (In the terminal, `⌥↵` / `Esc↵` inserts a newline without submitting; pasting a
 multi-line block works directly.)
 
-**Keep the quotes, and put other flags first.** Quoted focus text is lifted out
-of the arguments before anything else is matched, so prose containing words like
-`adversarial`, `main`, or `wip` stays prose instead of quietly switching the mode
-or retargeting the review. Unquoted focus text runs to the end of the input, so
-the target and any other flags go *before* it:
+**Keep the quotes, and put other flags first.** Quoting makes something
+*content, never syntax* — any quoted span is lifted out before anything else is
+matched, so prose containing words like `adversarial`, `main`, `wip`, or a
+stray ` -- ` stays prose instead of quietly switching the mode, becoming a path
+filter, or retargeting the review. This holds for the bare form
+(`/gemini-review "…"`) just as much as for `--focus "…"`.
+
+The flip side is deliberate: `/gemini-review "develop"` reviews the branch diff
+with `develop` as focus text, while unquoted `/gemini-review develop` diffs
+against the `develop` ref. Quote it and it's content; leave it bare and it's
+syntax — which doubles as the escape hatch when a word could be either.
+
+Unquoted focus text runs to the end of the input, so the target and any other
+flags go *before* it:
 
 ```
 /gemini-review 42 adversarial --save review.md --focus "…long block…"

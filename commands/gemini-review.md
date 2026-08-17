@@ -12,13 +12,32 @@ complementary to `/codex:review`. Argument: `$ARGUMENTS`.
 Tokenize `$ARGUMENTS` and consume in **exactly this order**. Each step removes
 what it claims; later steps only ever see the remainder.
 
-**Rule 0 — a quoted span is opaque.** Text inside `--focus "…"` is never matched
-as a flag, a separator, or a target by *any* step below, including the bare `--`
-split. Lift quoted focus spans out first and set them aside. This is what lets
-focus prose read naturally: `--focus "the retry logic -- especially the backoff"`
-keeps its dash instead of splitting into a bogus pathspec, and `--focus "check
-the adversarial path"` stays a standard review. Unquoted arguments have no such
-protection, which is why quoting long focus text is the recommended form.
+**Rule 0 — quoting makes something content, never syntax.** This applies to
+**every quoted span**, not only one following `--focus`. Lift all quoted spans
+out *first*, set them aside, and run every step below on what is left. Inside a
+quoted span nothing is ever matched as a flag, a mode token, a separator, or a
+target — including the bare `--` split and the `adversarial` match.
+
+This is what lets focus prose read naturally in **both** supported forms:
+
+| input | why Rule 0 matters |
+|---|---|
+| `--focus "the retry logic -- especially backoff"` | the ` -- ` stays prose, not a pathspec split |
+| `"check the adversarial path -- especially backoff"` | focus-only form: **same protection**, still a standard review of the branch diff |
+
+The second row is the one that is easy to get wrong. The focus-only form has no
+`--focus` marker in front of it, so a rule scoped to "spans after `--focus`"
+would leave it exposed — `adversarial` would flip the mode and ` -- ` would
+become a pathspec, producing a confident review of the wrong thing.
+
+A flag that takes an argument (`--save`, `--focus`) may still **consume** a
+quoted span as its value; that is the flag claiming it, not the span being
+interpreted. And a quoted span is never a **target**: `/gemini-review "develop"`
+is focus text on the default diff, while unquoted `/gemini-review develop` is a
+ref. Quote it and it is content; leave it bare and it is syntax.
+
+Unquoted arguments have no such protection, which is why quoting focus text is
+the recommended form.
 
 1. First token is **`doctor`** → run the **Doctor** health check below and stop.
    Ignore all other arguments.
@@ -73,13 +92,22 @@ protection, which is why quoting long focus text is the recommended form.
 | `42 --focus check retry logic` | PR 42 | standard | — | `check retry logic` |
 | `--focus "check the adversarial path"` | branch vs base | **standard** | — | `check the adversarial path` |
 | `adversarial --focus "the retry logic -- especially backoff"` | branch vs base | adversarial | **—** | `the retry logic -- especially backoff` |
+| `"check the adversarial path -- especially backoff"` | branch vs base | **standard** | **—** | `check the adversarial path -- especially backoff` |
+| `"develop"` | **branch vs base** | standard | — | `develop` |
 | `42 adversarial --save r.md --focus "…"` | PR 42 | adversarial | — | `…` |
 
 Rows 4–5 are focus-only invocations: **prose with no target is valid** and falls
 back to the branch diff — the prose must never be handed to `git diff` as a ref.
 Rows 6–7 are what a naive tokenizer gets wrong: it would take only `check` and
-then read `retry` as a git ref. Rows 8–9 are Rule 0 — `adversarial` and ` -- `
+then read `retry` as a git ref. Rows 8–10 are Rule 0 — `adversarial` and ` -- `
 inside a quoted span must **not** change the mode or become a pathspec.
+
+**Row 10 is the trap.** It is the focus-only form with no `--focus` marker in
+front of it, so a Rule 0 scoped to "spans after `--focus`" would leave it
+unprotected: the mode would silently flip to adversarial and ` -- ` would become
+a pathspec. Rule 0 covers *every* quoted span for exactly this reason. Row 11
+shows the deliberate consequence — quoting a ref makes it focus text, because
+quoting always means content.
 
 **Echo the parse back before running.** State the target, mode, pathspec, and
 whether focus text was found, in one line. Every failure mode above produces a
@@ -211,11 +239,16 @@ exception, noted above). When `$PATHSPEC` is non-empty,
 **say so in the report** and name what was excluded — a path filter is the
 easiest way to make "reviewed" quietly overclaim.
 
-**Tiebreak.** If the first token is both a plausible git ref and plausible prose
+**Tiebreak — applies to UNQUOTED tokens only.** A quoted span is already settled
+by Rule 0: it is content, never a target, so it never reaches this test. For an
+*unquoted* first token that is both a plausible git ref and plausible prose
 (`main`, `master`, `test`), resolve it as a **ref** only when
 `git rev-parse --verify --quiet <token>` succeeds *and* no other target was
 given. Otherwise treat it as focus text. When ambiguous, say which reading you
 used in the report so a misread is visible rather than silent.
+
+This is also the escape hatch when the two readings collide: quote it to force
+prose (`"main"` → focus), leave it bare to force the ref (`main` → target).
 
 ## Step 2b — Focus text (the highest-value lever)
 
