@@ -169,9 +169,14 @@ passed as cheap defense-in-depth.
   agy            # run once interactively to sign in
   ```
   `agy update` upgrades in place; `agy --version` reports the build.
-- **`jq`** (or `python3`) — used to check whether the review actually produced
-  output. Not cosmetic: without a JSON parser that check degrades and an empty
-  review can read as a clean one. `brew install jq` / `apt install jq`.
+- **`jq`** (preferred) or **`python3`** — used to check whether the review
+  actually produced output. Not cosmetic: without a JSON parser that check
+  degrades and an empty review can read as a clean one.
+  `brew install jq` / `apt install jq`. (`jq` is preferred because `.response
+  // ""` coalesces a null response for free; the `python3` fallback must use
+  `.get("response") or ""` — `.get("response", "")` returns `None` on an
+  explicit null and would report a failed run as a review reading `None`.
+  `doctor` probes for exactly this.)
 - **git** (always) and the **GitHub CLI** (`gh`) only for the PR-number form
   (`/gemini-review 42`) and `--comment`.
 

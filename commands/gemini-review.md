@@ -149,9 +149,16 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
    ```bash
    command -v jq || command -v python3
    ```
-   - `jq` present → ✓.
-   - no `jq` but `python3` present → ✓ (Step 5's documented fallback); say which
-     one will be used.
+   - `jq` present → ✓ (preferred).
+   - no `jq` but `python3` present → ✓, but **only with Step 5's exact
+     one-liner**. Say which parser will be used, and verify it null-safe before
+     declaring READY:
+     ```bash
+     printf '{"response":null}' | python3 -c 'import json,sys;print(json.load(sys.stdin).get("response") or "")'
+     ```
+     Must print an **empty line**. If it prints `None`, the command is using
+     `.get("response", "")` — the wrong form — and a failed run will be reported
+     as a review whose text is the word `None`. Fix the parser, not the doctor.
    - **neither** → ✗ **NOT READY**. Remediation: `brew install jq` (macOS) or
      `apt install jq`. Do not fall back to grepping the JSON by hand.
 5. **`gh` for PR features** (optional — only needed for PR-number targets and
@@ -353,7 +360,22 @@ total failure**, and `"status":"SUCCESS"` appears in the JSON *even when the run
 produced nothing*. The only reliable signal is **a non-empty `.response`**:
 
 ```bash
-RESPONSE="$(jq -r '.response // ""' "$OUT")"     # or python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("response",""))' "$OUT"
+# jq: `// ""` coalesces BOTH a missing key and an explicit null.
+RESPONSE="$(jq -r '.response // ""' "$OUT")"
+
+# python3 fallback — note `or ""`, not `.get("response", "")`.
+# The default in .get() applies only when the key is ABSENT. On {"response": null}
+# it returns None, print() emits the literal string "None", and the -z test below
+# then reads that as a successful review — printing, saving, and posting "None"
+# as the findings. `or ""` coalesces null to empty so the hard stop fires.
+RESPONSE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("response") or "")' "$OUT")"
+# Backstop: a response that is exactly "None"/"null" is a parser artifact, not a
+# review. Cheap insurance if the parser above is ever edited back to a form that
+# stringifies null.
+case "$RESPONSE" in
+  None|null|nil) echo "parser artifact (\"$RESPONSE\") — treating as no review"; RESPONSE="" ;;
+esac
+
 if [ -z "$RESPONSE" ]; then
   echo "agy produced no review. Cause:"; cat "$ERR"
   exit 1     # STOP here — never fall through and print an empty review
