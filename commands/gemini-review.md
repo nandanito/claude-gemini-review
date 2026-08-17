@@ -360,15 +360,24 @@ total failure**, and `"status":"SUCCESS"` appears in the JSON *even when the run
 produced nothing*. The only reliable signal is **a non-empty `.response`**:
 
 ```bash
-# jq: `// ""` coalesces BOTH a missing key and an explicit null.
-RESPONSE="$(jq -r '.response // ""' "$OUT")"
-
-# python3 fallback — note `or ""`, not `.get("response", "")`.
-# The default in .get() applies only when the key is ABSENT. On {"response": null}
-# it returns None, print() emits the literal string "None", and the -z test below
-# then reads that as a successful review — printing, saving, and posting "None"
-# as the findings. `or ""` coalesces null to empty so the hard stop fires.
-RESPONSE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("response") or "")' "$OUT")"
+# Pick EXACTLY ONE parser. These are alternatives, not a sequence — running both
+# unconditionally means the second silently overwrites the first, and on a
+# jq-only box the python3 line yields "" and reports a successful review as a
+# failure.
+if command -v jq >/dev/null 2>&1; then
+  # `// ""` coalesces BOTH a missing key and an explicit null.
+  RESPONSE="$(jq -r '.response // ""' "$OUT")"
+elif command -v python3 >/dev/null 2>&1; then
+  # Note `or ""`, NOT `.get("response", "")`. The default in .get() applies only
+  # when the key is ABSENT. On {"response": null} it returns None, print() emits
+  # the literal string "None", and the -z test below then reads that as a
+  # successful review — printing, saving, and posting "None" as the findings.
+  RESPONSE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("response") or "")' "$OUT")"
+else
+  # Cannot verify the run happened, so do not present its output as a review.
+  echo "no JSON parser (jq or python3) — cannot verify the review; see /gemini-review doctor"
+  exit 1
+fi
 # Backstop: a response that is exactly "None"/"null" is a parser artifact, not a
 # review. Cheap insurance if the parser above is ever edited back to a form that
 # stringifies null.
