@@ -68,11 +68,13 @@ composes with every target:
 
 **Focus text is allowed to be long and structured.** A multi-paragraph block
 with numbered claims and specific pointers is the intended use, not an abuse of
-the argument — pass it through a shell variable or a quoted heredoc:
+the argument. Slash-command arguments are passed to the command **literally** —
+there is no shell involved, so you don't quote-escape or use a heredoc. Just
+type or paste the block straight after `--focus`, newlines and all:
 
-```bash
-/gemini-review --focus "$(cat <<'EOF'
-Check these specific claims, by name, and say so explicitly if each is sound:
+```
+/gemini-review --focus "Check these specific claims, by name, and say so
+explicitly if each is sound:
 
 1. ADR-002 rejects the hybrid approach on the grounds that it doubles write
    amplification. Verify that reasoning actually follows from the benchmark
@@ -81,10 +83,11 @@ Check these specific claims, by name, and say so explicitly if each is sound:
    for the encoding. Check the algebra, not the prose around it.
 3. Citations: the same source line is cited in five places. Confirm they agree.
 
-Beyond these, do your normal sweep and report anything else you find.
-EOF
-)"
+Beyond these, do your normal sweep and report anything else you find."
 ```
+
+(In the terminal, `⌥↵` / `Esc↵` inserts a newline without submitting; pasting a
+multi-line block works directly.)
 
 **Focus adds priorities; it does not narrow scope.** This matters more than it
 sounds. Focused and unfocused runs find *different* defects and neither is a

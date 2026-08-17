@@ -450,8 +450,24 @@ code**.
 1. **Refuse to clobber silently.** If `<path>` exists, do not overwrite it
    without saying so — report the existing path and stop, or write alongside it.
    The user asked to keep a review, not to lose one.
-2. If `<path>` is a directory, write
-   `<path>/gemini-review-<target>-<timestamp>.md` inside it.
+2. If `<path>` is a directory, write `gemini-review-<slug>-<timestamp>.md`
+   inside it — where `<slug>` is the target **made filename-safe first**.
+
+   Targets are routinely branch names containing slashes (`feature/foo`,
+   `release/v1.2.3`). Interpolating one raw turns the slash into a **path
+   separator**, so the write either fails on a missing intermediate directory
+   or silently lands somewhere other than the file you meant:
+
+   ```bash
+   SLUG="$(printf '%s' "$TARGET" | tr '/ :~^?*[]\\' '-' | tr -s '-' | sed 's/^-*//; s/-*$//')"
+   : "${SLUG:=review}"            # empty/degenerate target must not yield a dotfile or bare -.md
+   OUT_PATH="$SAVE_DIR/gemini-review-${SLUG}-$(date +%Y%m%d-%H%M%S).md"
+   ```
+
+   This collapses path separators and other path-hostile characters to `-`, so
+   `feature/foo` becomes `gemini-review-feature-foo-<ts>.md` and the result is
+   always a single file directly inside `<path>`. The same applies to the
+   `--comment` path only insofar as it never touches the filesystem.
 3. Write the **provenance header, then `$RESPONSE` verbatim**:
    ```markdown
    # Gemini Review — <target>
