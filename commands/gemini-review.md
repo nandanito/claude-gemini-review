@@ -120,6 +120,7 @@ with an argument is ever added, it belongs in the 3–4 group, not after.
 | `42 adversarial --save r.md --focus "…"` | PR 42 | adversarial | — | `…` |
 | `develop -- src/ tests/` | `develop` | standard | `src/` **+** `tests/` (two entries) | — |
 | `42 --save adversarial` | PR 42 | **standard** | — | — (saves to file `adversarial`) |
+| `wip -- src/` | **working tree** (`git diff HEAD`) | standard | `src/` | — |
 
 Rows 4–5 are focus-only invocations: **prose with no target is valid** and falls
 back to the branch diff — the prose must never be handed to `git diff` as a ref.
@@ -130,7 +131,11 @@ inside a quoted span must **not** change the mode or become a pathspec.
 **Row 13** must stay *two* pathspec entries, never the single string
 `src/ tests/` — see step 2. **Row 14** must stay a **standard** review saving to
 a file literally named `adversarial`: the token after `--save` is a filename, not
-a mode, which is why argument-taking flags are consumed first.
+a mode, which is why argument-taking flags are consumed first. **Row 15** must
+diff the **working tree** (`git diff HEAD -- src/`), not `$BASE...HEAD -- src/`
+— a pathspec narrows which files are reviewed, never which commits. Rows 3, 13
+and 15 together are the check that target and pathspec **compose** instead of
+one overriding the other.
 
 **Row 10 is the trap.** It is the focus-only form with no `--focus` marker in
 front of it, so a Rule 0 scoped to "spans after `--focus`" would leave it
@@ -232,6 +237,12 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
 
 ## Step 2 — Determine the review target from the remaining args
 
+**This step decides the revision; Step 3 only adds path filters to it.** Record
+which case matched — `$TARGET_KIND` is `branch`, `ref`, `wip`, or `pr`, plus
+`$BASE` or `$REF` as applicable. Step 3 builds its `git diff` arguments from
+that. Step 3 must never re-derive the revision or fall back to `$BASE`: a
+pathspec narrows *which files* are reviewed, never *which commits*.
+
 - **Empty** → review this branch's PR diff against its base. Detect the base:
   try the remote default branch
   (`git symbolic-ref --quiet refs/remotes/origin/HEAD` → strip to the branch
@@ -332,22 +343,31 @@ instruct the model to do both — see the focus block in Step 4.
   OUT="$(mktemp)"; ERR="$(mktemp)"
   trap 'rm -f "$DIFF_FILE" "$PROMPT_FILE" "$OUT" "$ERR"' EXIT
 
-  # Pathspecs go in the positional list, ONE ARGUMENT EACH — `set --` then "$@".
-  # This is portable across bash and zsh and is the only form that survives both.
+  # STEP A — the TARGET selects the diff arguments. Never hard-code "$BASE" here:
+  # the target may be an explicit ref, or `wip`, which is a TWO-dot working-tree
+  # diff — a different form entirely, not just a different revision. Getting this
+  # wrong reviews the default branch diff while reporting the requested target.
+  case "$TARGET_KIND" in
+    branch) set -- --text "$BASE...HEAD" ;;   # default: this branch vs its base
+    ref)    set -- --text "$REF...HEAD" ;;    # /gemini-review develop
+    wip)    set -- --text HEAD ;;             # /gemini-review wip (staged+unstaged)
+    # A PR target never reaches here — it uses `gh pr diff` (Step 2).
+  esac
+
+  # STEP B — append the pathspecs, ONE ARGUMENT EACH, after a literal `--`.
+  # Building one positional list keeps target and pathspec composed rather than
+  # letting the pathspec branch re-decide the revision.
   #
   # Do NOT use a scalar. `-- $PATHSPEC` with PATHSPEC="src/ tests/" works in bash
   # (word splitting) but NOT in zsh, which passes one pathspec literally named
   # "src/ tests/". That matches nothing, so the guard below aborts with "nothing
   # to review" — a valid two-path request rejected as if it were empty.
-  # Equally, do NOT collapse to ${PATHSPEC:+-- $PATHSPEC}: `--` must stay its own
-  # word or git rejects the whole invocation with a usage error.
-  set -- <the pathspec list from parse step 2, one argument per path>
-
-  if [ "$#" -gt 0 ]; then
-    git diff --text "$BASE"...HEAD -- "$@" | tr -d '\000' > "$DIFF_FILE"
-  else
-    git diff --text "$BASE"...HEAD | tr -d '\000' > "$DIFF_FILE"
+  # Equally, `--` must stay its own word or git rejects the invocation outright.
+  if [ <the parse-step-2 pathspec list is non-empty> ]; then
+    set -- "$@" -- <pathspec list, one argument per path>
   fi
+
+  git diff "$@" | tr -d '\000' > "$DIFF_FILE"
 
   if [ ! -s "$DIFF_FILE" ]; then
     echo "nothing to review (empty diff for this target/pathspec)"; exit 0
