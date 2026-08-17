@@ -41,10 +41,21 @@ the recommended form.
 
 1. First token is **`doctor`** → run the **Doctor** health check below and stop.
    Ignore all other arguments.
-2. **Split on the first bare `--`.** Everything *after* it is a **`$PATHSPEC`**
-   (a path filter passed straight to `git diff`), never a target and never focus
-   text. Everything before it continues through the steps below.
-   `$PATHSPEC` is empty when there is no `--`.
+2. **Split on the first bare `--`.** Everything *after* it is the **pathspec
+   list** (path filters passed straight to `git diff`), never a target and never
+   focus text. Everything before it continues through the steps below. The list
+   is empty when there is no `--`.
+
+   **Keep it as a LIST of separate arguments, not one joined string.**
+   `-- src/ tests/` is *two* pathspecs. Flattening them into a single scalar and
+   later expanding `-- $PATHSPEC` fails in **zsh**, which does not word-split
+   unquoted expansions: git receives one pathspec literally named `src/ tests/`,
+   matches nothing, and the empty-diff guard then aborts with "nothing to
+   review" — a valid request rejected in a way that looks like a legitimate stop
+   condition. (bash word-splits and happens to work, so this breaks only on the
+   more common interactive shell.) Carry the list through and forward each entry
+   as its own argument — see Step 3.
+
    **Do this before any other token matching** (but after Rule 0 sets quoted
    spans aside) — otherwise `-- src/` is swallowed as focus text and silently
    reviews the wrong thing.
@@ -68,16 +79,28 @@ the recommended form.
    come before it**: `/gemini-review 42 adversarial --focus <long text>`.
    Tokens *preceding* `--focus` are untouched and continue through the steps
    below. When in doubt, quote the focus text.
-4. **`adversarial`** (or **`adv`**) → use the **Adversarial review prompt**
+4. **`--save <path>`** → also write the review to `<path>` (see *Saving the
+   review*). Remove the flag **together with** its single path argument.
+
+   **A flag's argument is protected — claim it before any bare mode token is
+   matched.** This step deliberately precedes `adversarial` and `--comment`
+   below. Given `/gemini-review 42 --save adversarial`, matching modes first
+   would strip `adversarial` as a mode switch, flipping the review to the
+   hostile prompt *and* leaving `--save` with no path. The token immediately
+   after `--save` is a filename, whatever it happens to spell.
+5. **`adversarial`** (or **`adv`**) → use the **Adversarial review prompt**
    instead of the standard one. Remove the token. *(Matched only on what
-   survives step 3, so the word `adversarial` inside quoted focus text stays
-   part of the focus and does not switch modes.)*
-5. **`--comment`** → after the review, **post the findings to the PR** (see
+   survives steps 3–4, so `adversarial` inside quoted focus text or as a
+   `--save` filename stays content and does not switch modes.)*
+6. **`--comment`** → after the review, **post the findings to the PR** (see
    *Posting to the PR*). Remove the token.
-6. **`--save <path>`** → also write the review to `<path>` (see *Saving the
-   review*). Remove the flag *and* its single path argument.
 7. Of what remains: the **target** (Step 2), then any leftover is **focus
    text** (Step 2b), appended to anything `--focus` already supplied.
+
+**Ordering invariant.** Steps 3–4 consume *flags that take arguments*; steps 5–6
+match *bare tokens*. Argument-taking flags must always come first, so their
+arguments are claimed before anything can mistake one for syntax. If a new flag
+with an argument is ever added, it belongs in the 3–4 group, not after.
 
 ### Worked examples — the parse must produce exactly these
 
@@ -95,12 +118,19 @@ the recommended form.
 | `"check the adversarial path -- especially backoff"` | branch vs base | **standard** | **—** | `check the adversarial path -- especially backoff` |
 | `"develop"` | **branch vs base** | standard | — | `develop` |
 | `42 adversarial --save r.md --focus "…"` | PR 42 | adversarial | — | `…` |
+| `develop -- src/ tests/` | `develop` | standard | `src/` **+** `tests/` (two entries) | — |
+| `42 --save adversarial` | PR 42 | **standard** | — | — (saves to file `adversarial`) |
 
 Rows 4–5 are focus-only invocations: **prose with no target is valid** and falls
 back to the branch diff — the prose must never be handed to `git diff` as a ref.
 Rows 6–7 are what a naive tokenizer gets wrong: it would take only `check` and
 then read `retry` as a git ref. Rows 8–10 are Rule 0 — `adversarial` and ` -- `
 inside a quoted span must **not** change the mode or become a pathspec.
+
+**Row 13** must stay *two* pathspec entries, never the single string
+`src/ tests/` — see step 2. **Row 14** must stay a **standard** review saving to
+a file literally named `adversarial`: the token after `--save` is a filename, not
+a mode, which is why argument-taking flags are consumed first.
 
 **Row 10 is the trap.** It is the focus-only form with no `--focus` marker in
 front of it, so a Rule 0 scoped to "spans after `--focus`" would leave it
@@ -210,7 +240,7 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
   branch's changes).
 - **A bare integer** (e.g. `42`) → a GitHub PR. Use `gh pr diff 42` for the
   diff and `gh pr view 42` for the title/body so the reviewer has the intent.
-  **`gh pr diff` takes no pathspec.** If `$PATHSPEC` is non-empty with a PR
+  **`gh pr diff` takes no pathspec.** If the pathspec list is non-empty with a PR
   target, filter the diff *after* fetching it (e.g. `git apply --stat` style
   splitting, or `filterdiff`), or say plainly that the filter was not applied.
   Do not silently ignore it.
@@ -231,11 +261,11 @@ rule, the answer is the default branch diff — *not* passing the prose to
 errors out or, worse, resolves to something unintended and reviews the wrong
 thing. Default first; the prose is focus.
 
-**`$PATHSPEC` was already split off in step 2 of the parse** and is *not* part
+**The pathspec list was already split off in step 2 of the parse** and is *not* part
 of the target. It applies on top of whichever target was selected, so
 `/gemini-review develop -- src/` means "diff against `develop`, restricted to
 `src/`". Every git-based target composes with it (the PR target is the one
-exception, noted above). When `$PATHSPEC` is non-empty,
+exception, noted above). When the pathspec list is non-empty,
 **say so in the report** and name what was excluded — a path filter is the
 easiest way to make "reviewed" quietly overclaim.
 
@@ -302,11 +332,19 @@ instruct the model to do both — see the focus block in Step 4.
   OUT="$(mktemp)"; ERR="$(mktemp)"
   trap 'rm -f "$DIFF_FILE" "$PROMPT_FILE" "$OUT" "$ERR"' EXIT
 
-  # Keep `--` as its own word. Do NOT collapse this into ${PATHSPEC:+-- $PATHSPEC}:
-  # zsh does not word-split unquoted expansions, so git would receive the single
-  # argument "-- path" and reject it with a usage error.
-  if [ -n "$PATHSPEC" ]; then
-    git diff --text "$BASE"...HEAD -- $PATHSPEC | tr -d '\000' > "$DIFF_FILE"
+  # Pathspecs go in the positional list, ONE ARGUMENT EACH — `set --` then "$@".
+  # This is portable across bash and zsh and is the only form that survives both.
+  #
+  # Do NOT use a scalar. `-- $PATHSPEC` with PATHSPEC="src/ tests/" works in bash
+  # (word splitting) but NOT in zsh, which passes one pathspec literally named
+  # "src/ tests/". That matches nothing, so the guard below aborts with "nothing
+  # to review" — a valid two-path request rejected as if it were empty.
+  # Equally, do NOT collapse to ${PATHSPEC:+-- $PATHSPEC}: `--` must stay its own
+  # word or git rejects the whole invocation with a usage error.
+  set -- <the pathspec list from parse step 2, one argument per path>
+
+  if [ "$#" -gt 0 ]; then
+    git diff --text "$BASE"...HEAD -- "$@" | tr -d '\000' > "$DIFF_FILE"
   else
     git diff --text "$BASE"...HEAD | tr -d '\000' > "$DIFF_FILE"
   fi

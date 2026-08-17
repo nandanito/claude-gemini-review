@@ -23,7 +23,8 @@ it shows the older, slower Gemini CLI run; the review format is unchanged.</sub>
 /gemini-review 42         # review GitHub PR #42
 /gemini-review develop    # diff against a ref/branch
 /gemini-review wip        # include uncommitted work
-/gemini-review develop -- src/   # restrict to a path
+/gemini-review develop -- src/          # restrict to a path
+/gemini-review develop -- src/ tests/   # …or several
 ```
 
 Findings are returned **verbatim** — severity-tagged (CRITICAL/HIGH/MEDIUM/LOW),
