@@ -67,15 +67,19 @@ protection, which is why quoting long focus text is the recommended form.
 | *(empty)* | branch vs base | standard | — | — |
 | `42 --comment` | PR 42 | standard | — | — |
 | `develop -- src/` | `develop` | standard | `src/` | — |
+| `"check retry logic"` | **branch vs base** | standard | — | `check retry logic` |
+| `check retry logic` | **branch vs base** | standard | — | `check retry logic` |
 | `--focus check retry logic` | branch vs base | standard | — | `check retry logic` |
 | `42 --focus check retry logic` | PR 42 | standard | — | `check retry logic` |
 | `--focus "check the adversarial path"` | branch vs base | **standard** | — | `check the adversarial path` |
 | `adversarial --focus "the retry logic -- especially backoff"` | branch vs base | adversarial | **—** | `the retry logic -- especially backoff` |
 | `42 adversarial --save r.md --focus "…"` | PR 42 | adversarial | — | `…` |
 
-Rows 4–5 are the ones a naive tokenizer gets wrong: it would take only `check`
-and then read `retry` as a git ref. Rows 6–7 are Rule 0 — `adversarial` and
-` -- ` inside a quoted span must **not** change the mode or become a pathspec.
+Rows 4–5 are focus-only invocations: **prose with no target is valid** and falls
+back to the branch diff — the prose must never be handed to `git diff` as a ref.
+Rows 6–7 are what a naive tokenizer gets wrong: it would take only `check` and
+then read `retry` as a git ref. Rows 8–9 are Rule 0 — `adversarial` and ` -- `
+inside a quoted span must **not** change the mode or become a pathspec.
 
 **Echo the parse back before running.** State the target, mode, pathspec, and
 whether focus text was found, in one line. Every failure mode above produces a
@@ -181,6 +185,16 @@ remediation for each ✗; end with an overall **READY** / **NOT READY**.
   (unstaged + staged vs HEAD). Use this when reviewing before committing.
 - Anything left over after a target has been identified → **focus text**
   (see Step 2b). Focus text is *not* a target and never replaces one.
+- **No target token at all, only prose** (e.g. `/gemini-review "check retry
+  logic"`) → **default to this branch's diff against its base**, exactly as the
+  Empty case above, and treat the prose as focus text. Focus text alone is a
+  complete, supported invocation.
+
+**Never let leftover prose become the target.** If nothing matched a target
+rule, the answer is the default branch diff — *not* passing the prose to
+`git diff` as a ref. A word like `check` is not a ref, so using it as one either
+errors out or, worse, resolves to something unintended and reviews the wrong
+thing. Default first; the prose is focus.
 
 **`$PATHSPEC` was already split off in step 2 of the parse** and is *not* part
 of the target. It applies on top of whichever target was selected, so
